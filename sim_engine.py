@@ -664,40 +664,6 @@ def compute_diagnostics(
     )
 
 
-# ---------------------------------------------------------------------
-# UTILS
-# ---------------------------------------------------------------------
-
-
-def _solve_tridiagonal(
-    a: np.ndarray,
-    b: np.ndarray,
-    c: np.ndarray,
-    d: np.ndarray,
-) -> np.ndarray:
-    """
-    Thomas algorithm for tridiagonal system.
-    a: subdiagonal (n-1)
-    b: diagonal (n)
-    c: superdiagonal (n-1)
-    d: RHS (n)
-    """
-    n = len(b)
-    ac, bc, cc, dc = map(np.array, (a, b, c, d))  # copies
-
-    for i in range(1, n):
-        mc = ac[i - 1] / bc[i - 1]
-        bc[i] = bc[i] - mc * cc[i - 1]
-        dc[i] = dc[i] - mc * dc[i - 1]
-
-    xc = bc
-    xc[-1] = dc[-1] / bc[-1]
-
-    for i in range(n - 2, -1, -1):
-        xc[i] = (dc[i] - cc[i] * xc[i + 1]) / bc[i]
-
-    return xc
-
 
 # ---------------------------------------------------------------------
 # Diagnostics (Courant, diffusion, residence times, etc.)
