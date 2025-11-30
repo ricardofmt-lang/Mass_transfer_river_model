@@ -360,12 +360,16 @@ def results_to_excel(
     times: np.ndarray,
     results: Dict[str, np.ndarray],
 ) -> bytes:
-    """Export all properties to one Excel workbook (sheet per property)."""
+    """
+    Export all properties to one Excel workbook (sheet per property).
+    Uses openpyxl as engine (so no xlsxwriter dependency).
+    """
     x = np.asarray(x)
     times = np.asarray(times)
 
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+    # IMPORTANT: openpyxl engine to avoid xlsxwriter
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
         for name, arr in results.items():
             arr = np.asarray(arr)
             df = pd.DataFrame(arr, index=times, columns=x)
