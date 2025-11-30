@@ -31,6 +31,59 @@ st.set_page_config(
     layout="wide",
 )
 
+from dataclasses import dataclass
+
+@dataclass
+class Diagnostics:
+    courant: float
+    diffusion_number: float
+    grid_reynolds: float
+    res_time_river_days: float
+    res_time_cell_seconds: float
+    estimated_diffusivity: float
+
+
+def compute_diagnostics(grid: Grid, flow: Flow, cfg: SimulationConfig) -> Diagnostics:
+    """
+    Same logic as the Excel sheet:
+
+    Courant  = u * dt / dx
+    Diff     = K * dt / dx^2
+    Re_grid  = u * dx / K
+    Residence times from length / u
+    Estimated K ~ 0.1 * U * width
+    """
+    dt = cfg.dt
+    u = flow.velocity
+    dx = grid.dx
+
+    courant = flow.courant_number(grid, dt)
+    diffusion_number = flow.diffusion_number(grid, dt)
+
+    if flow.diffusivity > 0.0:
+        grid_re = abs(u) * dx / flow.diffusivity
+    else:
+        grid_re = 0.0
+
+    if u != 0.0:
+        res_time_cell = dx / abs(u)
+        res_time_river = grid.length / abs(u) / 86400.0  # seconds → days
+    else:
+        res_time_cell = 0.0
+        res_time_river = 0.0
+
+    # “Standard” dispersion: K ~ 0.1 * U * width
+    estimated_diff = 0.1 * abs(u) * grid.width
+
+    return Diagnostics(
+        courant=courant,
+        diffusion_number=diffusion_number,
+        grid_reynolds=grid_re,
+        res_time_river_days=res_time_river,
+        res_time_cell_seconds=res_time_cell,
+        estimated_diffusivity=estimated_diff,
+    )
+
 
 # ---------------------------------------------------------------------
 # SMALL UTILS
