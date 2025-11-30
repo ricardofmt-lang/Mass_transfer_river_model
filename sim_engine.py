@@ -101,9 +101,9 @@ class SimulationConfig:
     advection_scheme: Literal["upwind", "central", "quick"] = "upwind"
     time_scheme: Literal["explicit", "implicit", "semi-implicit"] = "explicit"
 
-    # QUICK_UP limiter (Quick with upwind fallback)
+    # QUICK_UP options (used in the UI / diagnostics)
     quick_up_enabled: bool = False
-    quick_up_ratio: float = 3.0     # corresponds to QUICK_UP_Ratio in the VBA
+    quick_up_ratio: float = 3.0
 
 
 @dataclass
@@ -697,3 +697,59 @@ def _solve_tridiagonal(
         xc[i] = (dc[i] - cc[i] * xc[i + 1]) / bc[i]
 
     return xc
+
+
+# ---------------------------------------------------------------------
+# Diagnostics (Courant, diffusion, residence times, etc.)
+# ---------------------------------------------------------------------
+
+@dataclass
+class Diagnostics:
+    courant: float
+    diffusion_number: float
+    grid_reynolds: float
+    res_time_river_days: float
+    res_time_cell_seconds: float
+    estimated_diffusivity: float
+
+
+def compute_diagnostics(
+    grid: Grid,
+    flow: Flow,
+    cfg: SimulationConfig,
+) -> Diagnostics:
+    """
+    Compute Courant number, diffusion number, grid Reynolds number,
+    residence times and a simple “standard” eddy diffusivity estimate.
+    """
+    dt = cfg.dt
+    u = flow.velocity
+    dx = grid.dx
+
+    # Existing helpers already defined on Flow
+    courant = flow.courant_number(grid, dt)
+    diffusion_number = flow.diffusion_number(grid, dt)
+
+    if flow.diffusivity > 0.0:
+        grid_re = abs(u) * dx / flow.diffusivity
+    else:
+        grid_re = 0.0
+
+    if u != 0.0:
+        res_time_cell = dx / abs(u)
+        res_time_river = grid.length / abs(u) / 86400.0  # convert to days
+    else:
+        res_time_cell = 0.0
+        res_time_river = 0.0
+
+    # Same idea as the “standard” dispersion correlation K ~ 0.1·U·width
+    estimated_diff = 0.1 * abs(u) * grid.width
+
+    return Diagnostics(
+        courant=courant,
+        diffusion_number=diffusion_number,
+        grid_reynolds=grid_re,
+        res_time_river_days=res_time_river,
+        res_time_cell_seconds=res_time_cell,
+        estimated_diffusivity=estimated_diff,
+    )
