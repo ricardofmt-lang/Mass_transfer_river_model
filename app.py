@@ -3,6 +3,7 @@ import streamlit as st
 from sim_engine import Grid, FlowProperties, Atmosphere, BoundaryCondition, Discharge, Property, Simulation
 from visualization import plot_line, animate_profile
 import pandas as pd
+import numpy as np
 
 st.title("1D River Transport Simulation")
 
