@@ -910,7 +910,7 @@ else:
                 name=prop_name_1d,
                 units=prop_cfg.units,
             )
-            st.plotly_chart(fig_profile, width="stretch")
+            st.plotly_chart(fig_profile, use_container_width=True)
 
         # time series
         with colB:
@@ -930,7 +930,7 @@ else:
                 name=prop_name_1d,
                 units=prop_cfg.units,
             )
-            st.plotly_chart(fig_ts, width="stretch")
+            st.plotly_chart(fig_ts, use_container_width=True)
 
         st.markdown("### Space–time diagram")
         fig_st = make_space_time_figure(
@@ -940,7 +940,7 @@ else:
             name=prop_name_1d,
             units=prop_cfg.units,
         )
-        st.plotly_chart(fig_st, width="stretch")
+        st.plotly_chart(fig_st, use_container_width=True)
 
     # ---------------------- Tab 2: Top-view map ----------------------
 
@@ -977,7 +977,7 @@ else:
                 name=prop_name_map,
                 units=prop_cfg_map.units,
             )
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, use_container_width=True)
         else:
             speed = st.slider(
                 "Animation speed factor (1 = normal)",
@@ -997,7 +997,7 @@ else:
                 units=prop_cfg_map.units,
                 frame_duration_ms=frame_duration_ms,
             )
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, use_container_width=True)
 
     # ---------------------- Tab 3: Downloads -------------------------
 
