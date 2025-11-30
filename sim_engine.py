@@ -15,6 +15,7 @@ class Grid:
     width: float    # m
     depth: float    # m
     nc: int         # number of cells
+    slope: float = 0.0  # river bed slope (m/m), positive = bed goes down with x
 
     def __post_init__(self):
         self.dx = self.length / self.nc
