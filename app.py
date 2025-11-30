@@ -37,6 +37,7 @@ length = st.sidebar.number_input("River length (m)", value=1000.0, min_value=1.0
 nc = st.sidebar.slider("Number of cells", min_value=10, max_value=500, value=100, step=10)
 width = st.sidebar.number_input("Average width (m)", value=10.0, min_value=0.1)
 depth = st.sidebar.number_input("Average depth (m)", value=2.0, min_value=0.1)
+slope = st.sidebar.number_input("River bed slope (m/m)", value=0.001, min_value=0.0, format="%.5f")
 
 velocity = st.sidebar.number_input("Mean velocity (m/s)", value=0.5)
 diffusivity = st.sidebar.number_input("Longitudinal diffusivity (m²/s)", value=1.0, min_value=0.0)
@@ -60,7 +61,7 @@ default_props = ["Generic", "Temperature", "DO", "BOD", "CO2"]
 prop_cfg: dict[str, PropertyConfig] = {}
 init_profiles: dict[str, np.ndarray] = {}
 
-grid_preview = Grid(length=length, width=width, depth=depth, nc=nc)
+grid_preview = Grid(length=length, width=width, depth=depth, nc=nc, slope=slope)
 x_centers = grid_preview.x
 
 with st.expander("Global notes / help", expanded=False):
@@ -302,7 +303,7 @@ if st.button("Run simulation"):
     if not active_props:
         st.error("Please activate at least one property.")
     else:
-        grid = Grid(length=length, width=width, depth=depth, nc=nc)
+        grid = Grid(length=length, width=width, depth=depth, nc=nc, slope=slope)
         flow = Flow(
             velocity=velocity,
             diffusivity=diffusivity,
@@ -337,6 +338,7 @@ if st.button("Run simulation"):
                 "x": grid.x,
                 "width": grid.width,
                 "depth": grid.depth,
+                "slope": grid.slope,
                 "props_cfg": active_props,
             }
             st.success("Simulation finished. Scroll down to see results.")
@@ -354,7 +356,8 @@ if sim_data is not None:
     grid_width = sim_data["width"]
     grid_depth = sim_data["depth"]
     props_cfg_run = sim_data["props_cfg"]
-
+    grid_slope = sim_data["slope"]
+    
     tab_2d, tab_3d, tab_dl = st.tabs(["2D plots", "3D view", "Downloads"])
 
     # -------- 2D PLOTS -------------------------------------------------------
@@ -410,21 +413,21 @@ if sim_data is not None:
     # -------- 3D VIEW --------------------------------------------------------
     with tab_3d:
         st.subheader("3D river visualisation")
-
+    
         prop_names_run = list(results.keys())
         prop_3d = st.selectbox(
             "Property for 3D view", prop_names_run, key="prop_3d"
         )
         arr3d = results[prop_3d]
         units3d = props_cfg_run[prop_3d].units
-
+    
         mode_3d = st.radio(
             "3D mode",
             ["Static (slider)", "Animated"],
             horizontal=True,
             key="mode_3d",
         )
-
+    
         if mode_3d == "Static (slider)":
             t_idx = st.slider(
                 "Select output time index",
@@ -433,12 +436,35 @@ if sim_data is not None:
                 value=len(times) - 1,
             )
             fig3d = river_surface_figure(
-                grid_x, grid_width, grid_depth, arr3d, times, t_idx, prop_3d, units3d
+                grid_x,
+                grid_width,
+                grid_depth,
+                grid_slope,      # NEW
+                arr3d,
+                times,
+                t_idx,
+                prop_3d,
+                units3d,
             )
             st.plotly_chart(fig3d, use_container_width=True)
         else:
+            speed = st.slider(
+                "Animation speed (ms per frame)",
+                min_value=50,
+                max_value=1000,
+                value=150,
+                step=50,
+            )
             fig_anim = river_surface_animation_figure(
-                grid_x, grid_width, grid_depth, arr3d, times, prop_3d, units3d
+                grid_x,
+                grid_width,
+                grid_depth,
+                grid_slope,      # NEW
+                arr3d,
+                times,
+                prop_3d,
+                units3d,
+                frame_duration_ms=speed,
             )
             st.plotly_chart(fig_anim, use_container_width=True)
 
