@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 
 
 def _format_time_label(t: float) -> str:
+    """Pretty formatting of time for titles/labels."""
     if t < 60:
         return f"{t:.1f} s"
     if t < 3600:
@@ -14,7 +15,9 @@ def _format_time_label(t: float) -> str:
     return f"{t / 3600:.1f} h"
 
 
-# ---------------------- 1D plots ----------------------------------------
+# ---------------------------------------------------------------------
+# 1D PLOTS
+# ---------------------------------------------------------------------
 
 
 def make_spatial_profile_figure(
@@ -24,6 +27,10 @@ def make_spatial_profile_figure(
     name: str,
     units: str,
 ) -> go.Figure:
+    """C(x) at a single time."""
+    x = np.asarray(x)
+    values = np.asarray(values)
+
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
@@ -50,6 +57,10 @@ def make_time_series_figure(
     name: str,
     units: str,
 ) -> go.Figure:
+    """C(t) at one spatial position."""
+    times = np.asarray(times)
+    values = np.asarray(values)
+
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
@@ -76,6 +87,11 @@ def make_space_time_figure(
     name: str,
     units: str,
 ) -> go.Figure:
+    """C(x,t) as a space–time heatmap."""
+    times = np.asarray(times)
+    x = np.asarray(x)
+    values_2d = np.asarray(values_2d)
+
     fig = go.Figure(
         data=go.Heatmap(
             x=x,
@@ -94,7 +110,9 @@ def make_space_time_figure(
     return fig
 
 
-# ---------------------- Top-view river map ------------------------------
+# ---------------------------------------------------------------------
+# 2D TOP-VIEW RIVER MAP
+# ---------------------------------------------------------------------
 
 
 def river_topview_frame(
@@ -106,16 +124,21 @@ def river_topview_frame(
     n_width_points: int = 25,
 ) -> go.Figure:
     """
-    2D top view: x-axis is distance along river, y-axis is width.
-    Values are constant across width (1D model extruded laterally).
+    Static 2D top view: x-axis = distance along river, y-axis = width.
+    Values are constant across width (1D field extruded laterally).
     """
     x = np.asarray(x)
     values = np.asarray(values)
 
+    # lateral coordinate
     y = np.linspace(0.0, width, n_width_points)
     field = np.tile(values, (n_width_points, 1))
 
-    dx = x[1] - x[0] if len(x) > 1 else 1.0
+    # cell edges (for grid lines)
+    if len(x) > 1:
+        dx = x[1] - x[0]
+    else:
+        dx = 1.0
     edges = np.concatenate(
         (
             [x[0] - dx / 2.0],
@@ -124,16 +147,17 @@ def river_topview_frame(
         )
     )
 
-    fig = go.Figure(
-        data=go.Heatmap(
-            x=x,
-            y=y,
-            z=field,
-            colorscale="Viridis",
-            colorbar=dict(title=f"{name} ({units})" if units else name),
-        )
+    heat = go.Heatmap(
+        x=x,
+        y=y,
+        z=field,
+        colorscale="Viridis",
+        colorbar=dict(title=f"{name} ({units})" if units else name),
     )
 
+    fig = go.Figure(data=[heat])
+
+    # vertical grid lines for each cell
     for xe in edges:
         fig.add_shape(
             type="line",
@@ -141,7 +165,7 @@ def river_topview_frame(
             x1=xe,
             y0=0.0,
             y1=width,
-            line=dict(color="rgba(0,0,0,0.2)", width=1),
+            line=dict(color="rgba(0,0,0,0.25)", width=1),
         )
 
     fig.update_layout(
@@ -151,6 +175,7 @@ def river_topview_frame(
         yaxis=dict(scaleanchor="x", scaleratio=1),
         template="plotly_white",
     )
+    # width is not a “variable”, so hide ticks
     fig.update_yaxes(showticklabels=False)
     return fig
 
@@ -167,7 +192,7 @@ def river_topview_animation(
     n_width_points: int = 25,
 ) -> go.Figure:
     """
-    Animated top view. We sample at most max_frames in time.
+    Animated 2D top view. We sample at most `max_frames` time steps.
     """
     x = np.asarray(x)
     values_2d = np.asarray(values_2d)
@@ -183,7 +208,10 @@ def river_topview_animation(
 
     y = np.linspace(0.0, width, n_width_points)
 
-    dx = x[1] - x[0] if len(x) > 1 else 1.0
+    if len(x) > 1:
+        dx = x[1] - x[0]
+    else:
+        dx = 1.0
     edges = np.concatenate(
         (
             [x[0] - dx / 2.0],
@@ -192,10 +220,13 @@ def river_topview_animation(
         )
     )
 
-    idx0 = frame_indices[0]
-    field0 = np.tile(values_2d[idx0, :], (n_width_points, 1))
+    # for colour scale consistency
     vmin = float(np.nanmin(values_2d))
     vmax = float(np.nanmax(values_2d))
+
+    # initial frame
+    idx0 = frame_indices[0]
+    field0 = np.tile(values_2d[idx0, :], (n_width_points, 1))
 
     heat0 = go.Heatmap(
         x=x,
@@ -235,6 +266,7 @@ def river_topview_animation(
 
     fig = go.Figure(data=[heat0], frames=frames)
 
+    # grid lines
     for xe in edges:
         fig.add_shape(
             type="line",
@@ -242,7 +274,7 @@ def river_topview_animation(
             x1=xe,
             y0=0.0,
             y1=width,
-            line=dict(color="rgba(0,0,0,0.2)", width=1),
+            line=dict(color="rgba(0,0,0,0.25)", width=1),
         )
 
     fig.update_layout(
@@ -318,7 +350,9 @@ def river_topview_animation(
     return fig
 
 
-# ---------------------- Data export -------------------------------------
+# ---------------------------------------------------------------------
+# DATA EXPORT
+# ---------------------------------------------------------------------
 
 
 def results_to_excel(
@@ -327,6 +361,9 @@ def results_to_excel(
     results: Dict[str, np.ndarray],
 ) -> bytes:
     """Export all properties to one Excel workbook (sheet per property)."""
+    x = np.asarray(x)
+    times = np.asarray(times)
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         for name, arr in results.items():
