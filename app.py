@@ -13,9 +13,8 @@ from sim_engine import (
     PropertyConfig,
     Simulation,
     SimulationConfig,
-    Diagnostics,
-    compute_diagnostics,
 )
+
 from visualization import (
     make_space_time_figure,
     make_spatial_profile_figure,
