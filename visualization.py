@@ -1,51 +1,57 @@
+from __future__ import annotations
+
 import io
-from typing import Dict
+from typing import Dict, Iterable, List, Optional
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-
-
-def _format_time_label(t: float) -> str:
-    """Pretty formatting of time for titles/labels."""
-    if t < 60:
-        return f"{t:.1f} s"
-    if t < 3600:
-        return f"{t / 60:.1f} min"
-    return f"{t / 3600:.1f} h"
+from plotly.graph_objs import Heatmap
 
 
 # ---------------------------------------------------------------------
-# 1D PLOTS
+# SMALL HELPERS
+# ---------------------------------------------------------------------
+
+
+def _format_time_label(t: float) -> str:
+    """Nicely format time in seconds as h:mm:ss."""
+    if t < 60:
+        return f"{t:.0f} s"
+    m, s = divmod(int(round(t)), 60)
+    if m < 60:
+        return f"{m:d} min {s:02d} s"
+    h, m = divmod(m, 60)
+    return f"{h:d} h {m:02d} min"
+
+
+# ---------------------------------------------------------------------
+# 1D & 2D PLOTS
 # ---------------------------------------------------------------------
 
 
 def make_spatial_profile_figure(
     x: np.ndarray,
     values: np.ndarray,
-    t: float,
     name: str,
     units: str,
 ) -> go.Figure:
-    """C(x) at a single time."""
+    """Profile along river at one instant."""
     x = np.asarray(x)
     values = np.asarray(values)
 
     fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=x,
-            y=values,
-            mode="lines+markers",
-            line=dict(width=2),
-            name=name,
-        )
+    fig.add_scatter(
+        x=x,
+        y=values,
+        mode="lines+markers",
+        name=name,
     )
     fig.update_layout(
-        title=f"{name} along river at t={_format_time_label(t)}",
+        template="plotly_white",
         xaxis_title="Distance along river (m)",
         yaxis_title=f"{name} ({units})" if units else name,
-        template="plotly_white",
+        title=f"{name} along the river",
     )
     return fig
 
@@ -53,47 +59,46 @@ def make_spatial_profile_figure(
 def make_time_series_figure(
     times: np.ndarray,
     values: np.ndarray,
-    x_loc: float,
+    x_location: float,
     name: str,
     units: str,
 ) -> go.Figure:
-    """C(t) at one spatial position."""
+    """Time series at a fixed location."""
     times = np.asarray(times)
     values = np.asarray(values)
 
     fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=times,
-            y=values,
-            mode="lines+markers",
-            line=dict(width=2),
-            name=name,
-        )
+    fig.add_scatter(
+        x=times,
+        y=values,
+        mode="lines+markers",
+        name=name,
     )
     fig.update_layout(
-        title=f"{name} at x={x_loc:.1f} m",
+        template="plotly_white",
         xaxis_title="Time (s)",
         yaxis_title=f"{name} ({units})" if units else name,
-        template="plotly_white",
+        title=f"{name} at x={x_location:.1f} m",
     )
     return fig
 
 
 def make_space_time_figure(
-    times: np.ndarray,
     x: np.ndarray,
+    times: np.ndarray,
     values_2d: np.ndarray,
     name: str,
     units: str,
 ) -> go.Figure:
-    """C(x,t) as a space–time heatmap."""
-    times = np.asarray(times)
+    """
+    Space–time heatmap (x vs t).
+    """
     x = np.asarray(x)
+    times = np.asarray(times)
     values_2d = np.asarray(values_2d)
 
     fig = go.Figure(
-        data=go.Heatmap(
+        data=Heatmap(
             x=x,
             y=times,
             z=values_2d,
@@ -102,16 +107,16 @@ def make_space_time_figure(
         )
     )
     fig.update_layout(
-        title=f"{name} – space–time map",
+        template="plotly_white",
         xaxis_title="Distance along river (m)",
         yaxis_title="Time (s)",
-        template="plotly_white",
+        title=f"{name} – space–time diagram",
     )
     return fig
 
 
 # ---------------------------------------------------------------------
-# 2D TOP-VIEW RIVER MAP
+# TOP VIEW MAP (2D “RIVER” VIEW)
 # ---------------------------------------------------------------------
 
 
@@ -121,43 +126,32 @@ def river_topview_frame(
     values: np.ndarray,
     name: str,
     units: str,
-    n_width_points: int = 25,
 ) -> go.Figure:
     """
-    Static 2D top view: x-axis = distance along river, y-axis = width.
-    Values are constant across width (1D field extruded laterally).
+    Single “top view” frame: x on horizontal, width on vertical axis.
+    values is the property along x, assumed uniform across width.
     """
     x = np.asarray(x)
     values = np.asarray(values)
 
-    # lateral coordinate
-    y = np.linspace(0.0, width, n_width_points)
-    field = np.tile(values, (n_width_points, 1))
+    # repeat along width to make a strip
+    ny = 2
+    y = np.linspace(0.0, width, ny)
+    field = np.tile(values[None, :], (ny, 1))
 
-    # cell edges (for grid lines)
-    if len(x) > 1:
-        dx = x[1] - x[0]
-    else:
-        dx = 1.0
-    edges = np.concatenate(
-        (
-            [x[0] - dx / 2.0],
-            (x[:-1] + x[1:]) / 2.0,
-            [x[-1] + dx / 2.0],
+    fig = go.Figure(
+        data=Heatmap(
+            x=x,
+            y=y,
+            z=field,
+            colorscale="Viridis",
+            colorbar=dict(title=f"{name} ({units})" if units else name),
         )
     )
 
-    heat = go.Heatmap(
-        x=x,
-        y=y,
-        z=field,
-        colorscale="Viridis",
-        colorbar=dict(title=f"{name} ({units})" if units else name),
-    )
-
-    fig = go.Figure(data=[heat])
-
-    # vertical grid lines for each cell
+    # grid lines at cell edges
+    dx = x[1] - x[0] if len(x) > 1 else 1.0
+    edges = np.concatenate(([x[0] - dx / 2.0], x + dx / 2.0))
     for xe in edges:
         fig.add_shape(
             type="line",
@@ -169,13 +163,12 @@ def river_topview_frame(
         )
 
     fig.update_layout(
+        template="plotly_white",
         title=f"Top view of river – {name}",
         xaxis_title="Distance along river (m)",
         yaxis_title="Width (m)",
         yaxis=dict(scaleanchor="x", scaleratio=1),
-        template="plotly_white",
     )
-    # width is not a “variable”, so hide ticks
     fig.update_yaxes(showticklabels=False)
     return fig
 
@@ -187,71 +180,53 @@ def river_topview_animation(
     times: np.ndarray,
     name: str,
     units: str,
-    frame_duration_ms: int = 200,
-    max_frames: int = 80,
-    n_width_points: int = 25,
+    frame_duration_ms: int = 300,
 ) -> go.Figure:
     """
-    Animated 2D top view. We sample at most `max_frames` time steps.
+    Animated top view (time-varying property).
     """
     x = np.asarray(x)
-    values_2d = np.asarray(values_2d)
     times = np.asarray(times)
+    values_2d = np.asarray(values_2d)
 
-    n_times, n_cells = values_2d.shape
-    assert n_cells == x.size
+    ny = 2
+    y = np.linspace(0.0, width, ny)
 
-    if n_times <= max_frames:
-        frame_indices = np.arange(n_times)
-    else:
-        frame_indices = np.linspace(0, n_times - 1, max_frames).astype(int)
+    dx = x[1] - x[0] if len(x) > 1 else 1.0
+    edges = np.concatenate(([x[0] - dx / 2.0], x + dx / 2.0))
 
-    y = np.linspace(0.0, width, n_width_points)
-
-    if len(x) > 1:
-        dx = x[1] - x[0]
-    else:
-        dx = 1.0
-    edges = np.concatenate(
-        (
-            [x[0] - dx / 2.0],
-            (x[:-1] + x[1:]) / 2.0,
-            [x[-1] + dx / 2.0],
-        )
+    # only a subset of frames to keep performance reasonable
+    n_frames = min(values_2d.shape[0], 60)
+    frame_indices = np.linspace(
+        0,
+        values_2d.shape[0] - 1,
+        n_frames,
+        dtype=int,
     )
-
-    # for colour scale consistency
-    vmin = float(np.nanmin(values_2d))
-    vmax = float(np.nanmax(values_2d))
 
     # initial frame
     idx0 = frame_indices[0]
-    field0 = np.tile(values_2d[idx0, :], (n_width_points, 1))
-
-    heat0 = go.Heatmap(
+    field0 = np.tile(values_2d[idx0, :][None, :], (ny, 1))
+    heat0 = Heatmap(
         x=x,
         y=y,
         z=field0,
         colorscale="Viridis",
         colorbar=dict(title=f"{name} ({units})" if units else name),
-        zmin=vmin,
-        zmax=vmax,
     )
 
     frames = []
     for idx in frame_indices:
-        field = np.tile(values_2d[idx, :], (n_width_points, 1))
+        field = np.tile(values_2d[idx, :][None, :], (ny, 1))
         frames.append(
             go.Frame(
                 data=[
-                    go.Heatmap(
+                    Heatmap(
                         x=x,
                         y=y,
                         z=field,
                         colorscale="Viridis",
                         colorbar=dict(title=f"{name} ({units})" if units else name),
-                        zmin=vmin,
-                        zmax=vmax,
                     )
                 ],
                 name=str(idx),
@@ -368,7 +343,6 @@ def results_to_excel(
     times = np.asarray(times)
 
     output = io.BytesIO()
-    # IMPORTANT: openpyxl engine to avoid xlsxwriter
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         for name, arr in results.items():
             arr = np.asarray(arr)
