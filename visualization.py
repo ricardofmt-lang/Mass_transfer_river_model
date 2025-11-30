@@ -44,7 +44,6 @@ def profiles_over_space_figure(x, times, arr, pname, units, time_indices):
             )
             data_frames.append(df)
     if not data_frames:
-        # fallback: just first time
         df = pd.DataFrame(
             {
                 "Distance (m)": x,
@@ -72,8 +71,6 @@ def profiles_over_space_figure(x, times, arr, pname, units, time_indices):
 def timeseries_figure(times, arr, pname, units, x_location, x_grid):
     """
     Time series C(t) at a chosen spatial location x.
-    x_location: user-chosen coordinate (m)
-    x_grid: array of cell centers (m)
     """
     x_grid = np.asarray(x_grid)
     times = np.asarray(times)
@@ -124,11 +121,9 @@ def curtain_figure(x, times, arr, pname, units):
 # ------------------------ 3D VISUALISATIONS ----------------------------------
 
 
-def river_surface_figure(x, width, arr, times, t_index, pname, units, n_cross=8):
+def river_surface_figure(x, width, depth, arr, times, t_index, pname, units, n_cross=8):
     """
-    3D view of the river surface.
-    Geometry: 1D channel extruded across width, with a flat water surface (z=0).
-    Colour of the surface encodes the property (arr[t_index, :]).
+    Static 3D view of the river: bed + water surface, coloured by property at one time.
     """
     x = np.asarray(x)
     times = np.asarray(times)
@@ -136,27 +131,184 @@ def river_surface_figure(x, width, arr, times, t_index, pname, units, n_cross=8)
     y = np.linspace(0.0, width, n_cross)
 
     X, Y = np.meshgrid(x, y)          # shapes (n_cross, n_x)
-    Z = np.zeros_like(X)              # flat water surface
-    C2d = np.tile(C, (n_cross, 1))    # same conc along width
+    water_z = np.zeros_like(X)
+    bed_z = -depth * np.ones_like(X)
+    C2d = np.tile(C, (n_cross, 1))
 
-    surface = go.Surface(
+    bed = go.Surface(
         x=X,
         y=Y,
-        z=Z,
+        z=bed_z,
+        colorscale="Greys",
+        showscale=False,
+        opacity=0.4,
+    )
+    water = go.Surface(
+        x=X,
+        y=Y,
+        z=water_z,
         surfacecolor=C2d,
         colorscale="Viridis",
         colorbar=dict(title=f"{pname} ({units})"),
     )
 
-    fig = go.Figure(data=[surface])
+    fig = go.Figure(data=[bed, water])
     fig.update_layout(
         title=f"{pname} on river surface at t = {times[t_index]:.1f} s",
         scene=dict(
             xaxis_title="Distance along river (m)",
             yaxis_title="River width (m)",
-            zaxis_title="Water surface",
-            zaxis=dict(showticklabels=False),
+            zaxis_title="Elevation (m)",
         ),
     )
-    fig.update_traces(showscale=True)
+    return fig
+
+
+def river_surface_animation_figure(
+    x,
+    width,
+    depth,
+    arr,
+    times,
+    pname,
+    units,
+    n_cross=8,
+    max_frames=60,
+):
+    """
+    Animated 3D view of the river surface over time (play/pause + slider).
+    """
+    x = np.asarray(x)
+    times = np.asarray(times)
+    n_times = arr.shape[0]
+    y = np.linspace(0.0, width, n_cross)
+
+    X, Y = np.meshgrid(x, y)
+    water_z = np.zeros_like(X)
+    bed_z = -depth * np.ones_like(X)
+
+    if n_times <= max_frames:
+        frame_indices = np.arange(n_times)
+    else:
+        frame_indices = np.linspace(0, n_times - 1, max_frames).astype(int)
+
+    # initial frame
+    C0 = arr[frame_indices[0], :]
+    C0_2d = np.tile(C0, (n_cross, 1))
+
+    bed = go.Surface(
+        x=X,
+        y=Y,
+        z=bed_z,
+        colorscale="Greys",
+        showscale=False,
+        opacity=0.4,
+    )
+    water0 = go.Surface(
+        x=X,
+        y=Y,
+        z=water_z,
+        surfacecolor=C0_2d,
+        colorscale="Viridis",
+        colorbar=dict(title=f"{pname} ({units})"),
+    )
+
+    frames = []
+    for idx in frame_indices:
+        C = arr[idx, :]
+        C2d = np.tile(C, (n_cross, 1))
+        frame = go.Frame(
+            data=[
+                go.Surface(
+                    x=X,
+                    y=Y,
+                    z=bed_z,
+                    colorscale="Greys",
+                    showscale=False,
+                    opacity=0.4,
+                ),
+                go.Surface(
+                    x=X,
+                    y=Y,
+                    z=water_z,
+                    surfacecolor=C2d,
+                    colorscale="Viridis",
+                    colorbar=dict(title=f"{pname} ({units})"),
+                ),
+            ],
+            name=str(idx),
+        )
+        frames.append(frame)
+
+    fig = go.Figure(data=[bed, water0], frames=frames)
+
+    fig.update_layout(
+        title=f"{pname} animation along river",
+        scene=dict(
+            xaxis_title="Distance along river (m)",
+            yaxis_title="River width (m)",
+            zaxis_title="Elevation (m)",
+        ),
+        updatemenus=[
+            dict(
+                type="buttons",
+                showactive=False,
+                buttons=[
+                    dict(
+                        label="Play",
+                        method="animate",
+                        args=[
+                            None,
+                            dict(
+                                frame=dict(duration=100, redraw=True),
+                                fromcurrent=True,
+                                transition=dict(duration=0),
+                            ),
+                        ],
+                    ),
+                    dict(
+                        label="Pause",
+                        method="animate",
+                        args=[
+                            [None],
+                            dict(
+                                frame=dict(duration=0, redraw=False),
+                                mode="immediate",
+                                transition=dict(duration=0),
+                            ),
+                        ],
+                    ),
+                ],
+                x=0.1,
+                y=0,
+                xanchor="right",
+                yanchor="top",
+            )
+        ],
+        sliders=[
+            dict(
+                steps=[
+                    dict(
+                        method="animate",
+                        args=[
+                            [str(idx)],
+                            dict(
+                                mode="immediate",
+                                frame=dict(duration=0, redraw=True),
+                                transition=dict(duration=0),
+                            ),
+                        ],
+                        label=f"{times[idx]:.1f}",
+                    )
+                    for idx in frame_indices
+                ],
+                x=0.1,
+                y=0,
+                xanchor="left",
+                yanchor="top",
+                pad=dict(t=50),
+                len=0.9,
+            )
+        ],
+    )
     return fig
