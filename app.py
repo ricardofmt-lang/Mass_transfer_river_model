@@ -18,9 +18,13 @@ from visualization import (
     timeseries_figure,
     curtain_figure,
     river_surface_figure,
+    river_surface_animation_figure,
 )
 
 st.set_page_config(page_title="River Mass Transfer Model", layout="wide")
+
+if "sim_data" not in st.session_state:
+    st.session_state["sim_data"] = None
 
 st.title("1D River Mass Transfer Model (Advection–Diffusion)")
 
@@ -56,7 +60,6 @@ default_props = ["Generic", "Temperature", "DO", "BOD", "CO2"]
 prop_cfg: dict[str, PropertyConfig] = {}
 init_profiles: dict[str, np.ndarray] = {}
 
-# grid preview for initial conditions
 grid_preview = Grid(length=length, width=width, depth=depth, nc=nc)
 x_centers = grid_preview.x
 
@@ -65,7 +68,7 @@ with st.expander("Global notes / help", expanded=False):
         "- All properties use the same **1D grid** and **flow conditions**.\n"
         "- Initial profiles can be `Uniform`, `Gaussian pulse`, or a `Step`.\n"
         "- Decay, reaeration, equilibrium concentration, and BOD–DO coupling are all configurable.\n"
-        "- The 2D plots reproduce the typical profiles and space–time plots shown in the course text.:contentReference[oaicite:1]{index=1}"
+        "- Visualisations are available **after** you run the simulation."
     )
 
 for pname in default_props:
@@ -86,7 +89,6 @@ for pname in default_props:
             prop_cfg[pname] = cfg
             continue
 
-        # kinetics
         col1, col2, col3 = st.columns(3)
         with col1:
             decay_rate = st.number_input(
@@ -117,7 +119,6 @@ for pname in default_props:
                 key="o2_per_bod",
             )
 
-        # bounds
         colb1, colb2 = st.columns(2)
         with colb1:
             min_val = st.number_input(
@@ -134,7 +135,6 @@ for pname in default_props:
         if max_val <= 0:
             max_val = None
 
-        # boundary conditions
         st.subheader(f"{pname} boundary conditions")
         colL, colR = st.columns(2)
         with colL:
@@ -168,7 +168,6 @@ for pname in default_props:
             right_value=right_val,
         )
 
-        # initial profile
         st.subheader(f"{pname} initial condition")
         ic_type = st.selectbox(
             f"{pname} initial shape",
@@ -208,7 +207,7 @@ for pname in default_props:
                 key=f"ic_width_{pname}",
             )
             profile = base + peak * np.exp(-(x_centers - center) ** 2 / (2 * width_ic**2))
-        else:  # Step from upstream
+        else:
             up_val = st.number_input(
                 f"{pname} upstream (left) initial value",
                 value=1.0,
@@ -294,7 +293,7 @@ if num_dis > 0:
             )
 
 
-# ----------------------- Run simulation -------------------------------------
+# ----------------------- Run simulation (store in session) ------------------
 
 
 if st.button("Run simulation"):
@@ -332,108 +331,138 @@ if st.button("Run simulation"):
         except Exception as e:
             st.error(f"Error in simulation: {e}")
         else:
-            st.success("Simulation finished.")
-            st.write(f"Number of output times: {len(times)}")
+            st.session_state["sim_data"] = {
+                "times": times,
+                "results": results,
+                "x": grid.x,
+                "width": grid.width,
+                "depth": grid.depth,
+                "props_cfg": active_props,
+            }
+            st.success("Simulation finished. Scroll down to see results.")
 
-            # -------------------------------------------------------------
-            # 3 PARTS: (1) DOWNLOADS, (2) 2D PLOTS, (3) 3D VISUALISATIONS
-            # -------------------------------------------------------------
-            tab_2d, tab_3d, tab_dl = st.tabs(["2D plots", "3D view", "Downloads"])
 
-            # -------- (2) 2D PLOTS --------------------------------------
-            with tab_2d:
-                st.subheader("2D visualisations")
+# ----------------------- Visualisations and downloads -----------------------
 
-                prop_names_run = list(results.keys())
-                prop_2d = st.selectbox(
-                    "Property for 2D plots", prop_names_run, key="prop_2d"
-                )
-                arr2d = results[prop_2d]
-                units = active_props[prop_2d].units
 
-                plot_type = st.selectbox(
-                    "Type of 2D plot",
-                    ["Profiles at selected times", "Time series at position", "Space–time curtain"],
-                    key="plot_type_2d",
-                )
+sim_data = st.session_state.get("sim_data")
 
-                if plot_type == "Profiles at selected times":
-                    st.markdown("Select up to 4 time indices to compare profiles.")
-                    max_idx = len(times) - 1
-                    indices = st.multiselect(
-                        "Output time indices",
-                        options=list(range(len(times))),
-                        default=[0, max_idx],
-                        help="These are indices into the output list (0 = initial).",
-                    )
-                    if not indices:
-                        indices = [0, max_idx]
-                    fig_profiles = profiles_over_space_figure(
-                        grid.x, times, arr2d, prop_2d, units, indices
-                    )
-                    st.plotly_chart(fig_profiles, use_container_width=True)
+if sim_data is not None:
+    times = sim_data["times"]
+    results = sim_data["results"]
+    grid_x = sim_data["x"]
+    grid_width = sim_data["width"]
+    grid_depth = sim_data["depth"]
+    props_cfg_run = sim_data["props_cfg"]
 
-                elif plot_type == "Time series at position":
-                    x_loc = st.number_input(
-                        "Spatial location x (m)",
-                        value=float(length / 2),
-                        min_value=0.0,
-                        max_value=float(length),
-                    )
-                    fig_ts, x_near = timeseries_figure(
-                        times, arr2d, prop_2d, units, x_loc, grid.x
-                    )
-                    st.write(f"Using nearest grid cell at x ≈ {x_near:.2f} m.")
-                    st.plotly_chart(fig_ts, use_container_width=True)
+    tab_2d, tab_3d, tab_dl = st.tabs(["2D plots", "3D view", "Downloads"])
 
-                else:  # curtain
-                    fig_curtain = curtain_figure(grid.x, times, arr2d, prop_2d, units)
-                    st.plotly_chart(fig_curtain, use_container_width=True)
+    # -------- 2D PLOTS -------------------------------------------------------
+    with tab_2d:
+        st.subheader("2D visualisations")
 
-            # -------- (3) 3D VIEW ---------------------------------------
-            with tab_3d:
-                st.subheader("3D river visualisation")
+        prop_names_run = list(results.keys())
+        prop_2d = st.selectbox(
+            "Property for 2D plots", prop_names_run, key="prop_2d"
+        )
+        arr2d = results[prop_2d]
+        units2d = props_cfg_run[prop_2d].units
 
-                prop_names_run = list(results.keys())
-                prop_3d = st.selectbox(
-                    "Property for 3D view", prop_names_run, key="prop_3d"
-                )
-                arr3d = results[prop_3d]
-                units3d = active_props[prop_3d].units
+        plot_type = st.selectbox(
+            "Type of 2D plot",
+            ["Profiles at selected times", "Time series at position", "Space–time curtain"],
+            key="plot_type_2d",
+        )
 
-                t_idx = st.slider(
-                    "Select output time index for 3D view",
-                    min_value=0,
-                    max_value=len(times) - 1,
-                    value=len(times) - 1,
-                )
-                fig3d = river_surface_figure(
-                    grid.x, grid.width, arr3d, times, t_idx, prop_3d, units3d
-                )
-                st.plotly_chart(fig3d, use_container_width=True)
+        if plot_type == "Profiles at selected times":
+            st.markdown("Select up to 4 time indices to compare profiles.")
+            max_idx = len(times) - 1
+            indices = st.multiselect(
+                "Output time indices",
+                options=list(range(len(times))),
+                default=[0, max_idx],
+                help="Indices into the output list (0 = initial).",
+            )
+            if not indices:
+                indices = [0, max_idx]
+            fig_profiles = profiles_over_space_figure(
+                grid_x, times, arr2d, prop_2d, units2d, indices
+            )
+            st.plotly_chart(fig_profiles, use_container_width=True)
 
-            # -------- (1) DOWNLOADS ------------------------------------
-            with tab_dl:
-                st.subheader("Download results")
+        elif plot_type == "Time series at position":
+            x_loc = st.number_input(
+                "Spatial location x (m)",
+                value=float(length / 2),
+                min_value=0.0,
+                max_value=float(length),
+            )
+            fig_ts, x_near = timeseries_figure(
+                times, arr2d, prop_2d, units2d, x_loc, grid_x
+            )
+            st.write(f"Using nearest grid cell at x ≈ {x_near:.2f} m.")
+            st.plotly_chart(fig_ts, use_container_width=True)
 
-                # CSV per property (students can import into Excel)
-                for pname, arr in results.items():
-                    units_p = active_props[pname].units
-                    df = pd.DataFrame(arr, columns=grid.x)
-                    df.insert(0, "time (s)", times)
-                    csv = df.to_csv(index=False)
-                    st.download_button(
-                        label=f"Download {pname} as CSV",
-                        data=csv,
-                        file_name=f"{pname}_results.csv",
-                        mime="text/csv",
-                    )
+        else:
+            fig_curtain = curtain_figure(grid_x, times, arr2d, prop_2d, units2d)
+            st.plotly_chart(fig_curtain, use_container_width=True)
 
-                # One Excel workbook with all properties (multi-sheet)
-                excel_buf = make_excel_workbook(times, grid.x, results, active_props)
-                st.download_button(
-                    label="Download all properties as Excel workbook",
-                    data=excel_buf,
-                    file_name="river_results.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
+    # -------- 3D VIEW --------------------------------------------------------
+    with tab_3d:
+        st.subheader("3D river visualisation")
+
+        prop_names_run = list(results.keys())
+        prop_3d = st.selectbox(
+            "Property for 3D view", prop_names_run, key="prop_3d"
+        )
+        arr3d = results[prop_3d]
+        units3d = props_cfg_run[prop_3d].units
+
+        mode_3d = st.radio(
+            "3D mode",
+            ["Static (slider)", "Animated"],
+            horizontal=True,
+            key="mode_3d",
+        )
+
+        if mode_3d == "Static (slider)":
+            t_idx = st.slider(
+                "Select output time index",
+                min_value=0,
+                max_value=len(times) - 1,
+                value=len(times) - 1,
+            )
+            fig3d = river_surface_figure(
+                grid_x, grid_width, grid_depth, arr3d, times, t_idx, prop_3d, units3d
+            )
+            st.plotly_chart(fig3d, use_container_width=True)
+        else:
+            fig_anim = river_surface_animation_figure(
+                grid_x, grid_width, grid_depth, arr3d, times, prop_3d, units3d
+            )
+            st.plotly_chart(fig_anim, use_container_width=True)
+
+    # -------- DOWNLOADS ------------------------------------------------------
+    with tab_dl:
+        st.subheader("Download results")
+
+        for pname, arr in results.items():
+            df = pd.DataFrame(arr, columns=grid_x)
+            df.insert(0, "time (s)", times)
+            csv = df.to_csv(index=False)
+            st.download_button(
+                label=f"Download {pname} as CSV",
+                data=csv,
+                file_name=f"{pname}_results.csv",
+                mime="text/csv",
+            )
+
+        excel_buf = make_excel_workbook(times, grid_x, results, props_cfg_run)
+        st.download_button(
+            label="Download all properties as Excel workbook",
+            data=excel_buf,
+            file_name="river_results.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+else:
+    st.info("Configure the model and click **Run simulation** to see results.")
