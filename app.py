@@ -1,456 +1,363 @@
-from dataclasses import dataclass, field
-from typing import Dict, List, Literal, Optional
+import streamlit as st
 import numpy as np
+import pandas as pd
 
-AdvectionScheme = Literal["upwind", "central", "quick"]
-TimeScheme = Literal["explicit", "implicit", "semi-implicit"]
+from sim_engine import (
+    Grid,
+    Flow,
+    PropertyConfig,
+    BoundaryCondition,
+    Discharge,
+    SimulationConfig,
+    Simulation,
+)
 
+st.set_page_config(page_title="River Mass Transfer Model", layout="wide")
 
-# ------------------------- Core data structures ------------------------------
-
-
-@dataclass
-class Grid:
-    length: float   # m
-    width: float    # m
-    depth: float    # m
-    nc: int         # number of cells
-
-    def __post_init__(self):
-        self.dx = self.length / self.nc
-        # cell centers
-        self.x = np.linspace(self.dx / 2, self.length - self.dx / 2, self.nc)
-
-    @property
-    def area_cross_section(self) -> float:
-        return self.width * self.depth
+st.title("1D River Mass Transfer Model (Advection–Diffusion)")
 
 
-@dataclass
-class Flow:
-    velocity: float      # m/s
-    diffusivity: float   # m^2/s
-    diffusion_on: bool = True
-
-    def compute_numbers(self, dt: float, dx: float) -> Dict[str, float]:
-        return {
-            "courant": self.velocity * dt / dx,
-            "diffusion": self.diffusivity * dt / dx**2 if self.diffusion_on else 0.0,
-        }
+# ----------------------- Sidebar: grid & numerics ----------------------------
 
 
-@dataclass
-class BoundaryCondition:
-    left_type: Literal["dirichlet", "neumann"] = "dirichlet"
-    left_value: float = 0.0
-    right_type: Literal["dirichlet", "neumann"] = "dirichlet"
-    right_value: float = 0.0
+st.sidebar.header("Grid and Flow")
+length = st.sidebar.number_input("River length (m)", value=1000.0, min_value=1.0)
+nc = st.sidebar.slider("Number of cells", min_value=10, max_value=500, value=100, step=10)
+width = st.sidebar.number_input("Average width (m)", value=10.0, min_value=0.1)
+depth = st.sidebar.number_input("Average depth (m)", value=2.0, min_value=0.1)
+
+velocity = st.sidebar.number_input("Mean velocity (m/s)", value=0.5)
+diffusivity = st.sidebar.number_input("Longitudinal diffusivity (m²/s)", value=1.0, min_value=0.0)
+diffusion_on = st.sidebar.checkbox("Include diffusion", value=True)
+
+st.sidebar.header("Time and Numerics")
+dt = st.sidebar.number_input("Time step Δt (s)", value=60.0, min_value=1e-6, format="%.6f")
+duration = st.sidebar.number_input("Total simulation time (s)", value=3600.0, min_value=dt)
+output_interval = st.sidebar.number_input("Output interval (s)", value=600.0, min_value=dt)
+
+adv_scheme = st.sidebar.selectbox("Advection scheme", ["upwind", "central", "quick"])
+time_scheme = st.sidebar.selectbox("Time discretization", ["explicit", "implicit", "semi-implicit"])
 
 
-@dataclass
-class PropertyConfig:
-    name: str
-    units: str = ""
-    active: bool = True
-    decay_rate: float = 0.0             # 1/s, first-order decay
-    reaeration_rate: float = 0.0        # 1/s, towards equilibrium_conc
-    equilibrium_conc: float = 0.0       # mg/L etc., for DO/CO2
-    oxygen_per_bod: float = 0.0         # mg O2 per mg BOD (used only for DO)
-    min_value: Optional[float] = None
-    max_value: Optional[float] = None
-    boundary: BoundaryCondition = field(default_factory=BoundaryCondition)
+# ----------------------- Properties configuration ---------------------------
 
 
-@dataclass
-class Discharge:
-    x: float                            # m from upstream
-    flow: float                         # m^3/s
-    concentrations: Dict[str, float]    # property name -> conc
-    # cell_index will be filled when Simulation is created
-    cell_index: int = 0
+st.header("Properties configuration")
+
+default_props = ["Generic", "Temperature", "DO", "BOD", "CO2"]
+prop_cfg: dict[str, PropertyConfig] = {}
+init_profiles: dict[str, np.ndarray] = {}
+
+# grid preview for initial conditions
+grid_preview = Grid(length=length, width=width, depth=depth, nc=nc)
+x = grid_preview.x
+
+with st.expander("Global notes / help", expanded=False):
+    st.markdown(
+        "- All properties use the same **1D grid** and **flow conditions**.\n"
+        "- Initial profiles can be `Uniform`, `Gaussian pulse`, or a `Step`.\n"
+        "- Decay, reaeration, equilibrium concentration, and BOD–DO coupling are all configurable."
+    )
+
+for pname in default_props:
+    with st.expander(f"{pname} settings", expanded=(pname == "Generic")):
+        active = st.checkbox(
+            f"Activate {pname}",
+            value=(pname in ["Generic", "Temperature"]),
+            key=f"active_{pname}",
+        )
+        units = st.text_input(
+            f"{pname} units",
+            value="mg/L" if pname != "Temperature" else "°C",
+            key=f"units_{pname}",
+        )
+
+        if not active:
+            cfg = PropertyConfig(name=pname, active=False, units=units)
+            prop_cfg[pname] = cfg
+            continue
+
+        # kinetics
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            decay_rate = st.number_input(
+                f"{pname} decay rate k (1/s)",
+                value=0.0 if pname != "BOD" else 1.0 / (30 * 24 * 3600),
+                format="%.3e",
+                key=f"decay_{pname}",
+            )
+        with col2:
+            reaer_rate = st.number_input(
+                f"{pname} reaeration / equilibration rate (1/s)",
+                value=0.0 if pname not in ["DO", "CO2"] else 1.0 / (2 * 24 * 3600),
+                format="%.3e",
+                key=f"reaer_{pname}",
+            )
+        with col3:
+            eq_conc = st.number_input(
+                f"{pname} equilibrium conc. (for reaeration)",
+                value=8.0 if pname == "DO" else 0.0,
+                key=f"eq_{pname}",
+            )
+
+        oxygen_per_bod = 0.0
+        if pname == "DO":
+            oxygen_per_bod = st.number_input(
+                "O₂ consumption per BOD unit (mg O₂ / mg BOD)",
+                value=1.0,
+                key="o2_per_bod",
+            )
+
+        # bounds
+        colb1, colb2 = st.columns(2)
+        with colb1:
+            min_val = st.number_input(
+                f"{pname} minimum (optional)",
+                value=0.0,
+                key=f"min_{pname}",
+            )
+        with colb2:
+            max_val = st.number_input(
+                f"{pname} maximum (optional, 0 = ignore)",
+                value=0.0,
+                key=f"max_{pname}",
+            )
+        if max_val <= 0:
+            max_val = None
+
+        # boundary conditions
+        st.subheader(f"{pname} boundary conditions")
+        colL, colR = st.columns(2)
+        with colL:
+            left_type = st.selectbox(
+                f"{pname} left BC type",
+                ["dirichlet", "neumann"],
+                key=f"bcLtype_{pname}",
+            )
+            left_val = st.number_input(
+                f"{pname} left BC value",
+                value=1.0 if pname == "Generic" else 0.0,
+                key=f"bcLval_{pname}",
+            )
+        with colR:
+            right_type = st.selectbox(
+                f"{pname} right BC type",
+                ["dirichlet", "neumann"],
+                index=0,
+                key=f"bcRtype_{pname}",
+            )
+            right_val = st.number_input(
+                f"{pname} right BC value",
+                value=0.0,
+                key=f"bcRval_{pname}",
+            )
+
+        bc = BoundaryCondition(
+            left_type=left_type,
+            left_value=left_val,
+            right_type=right_type,
+            right_value=right_val,
+        )
+
+        # initial profile
+        st.subheader(f"{pname} initial condition")
+        ic_type = st.selectbox(
+            f"{pname} initial shape",
+            ["Uniform", "Gaussian pulse", "Step from upstream"],
+            key=f"ic_type_{pname}",
+        )
+
+        if ic_type == "Uniform":
+            base = st.number_input(
+                f"{pname} uniform value",
+                value=0.0,
+                key=f"ic_uniform_{pname}",
+            )
+            profile = np.ones_like(x) * base
+        elif ic_type == "Gaussian pulse":
+            base = st.number_input(
+                f"{pname} background value",
+                value=0.0,
+                key=f"ic_bg_{pname}",
+            )
+            peak = st.number_input(
+                f"{pname} peak value",
+                value=1.0,
+                key=f"ic_peak_{pname}",
+            )
+            center = st.number_input(
+                f"{pname} pulse center (m)",
+                value=length / 2,
+                min_value=0.0,
+                max_value=length,
+                key=f"ic_center_{pname}",
+            )
+            width = st.number_input(
+                f"{pname} pulse width (m)",
+                value=length / 10,
+                min_value=1e-6,
+                key=f"ic_width_{pname}",
+            )
+            profile = base + peak * np.exp(-(x - center) ** 2 / (2 * width**2))
+        else:  # Step from upstream
+            up_val = st.number_input(
+                f"{pname} upstream (left) initial value",
+                value=1.0,
+                key=f"ic_up_{pname}",
+            )
+            down_val = st.number_input(
+                f"{pname} downstream (right) initial value",
+                value=0.0,
+                key=f"ic_down_{pname}",
+            )
+            step_pos = st.number_input(
+                f"{pname} step position (m)",
+                value=length / 2,
+                min_value=0.0,
+                max_value=length,
+                key=f"ic_step_{pname}",
+            )
+            profile = np.where(x <= step_pos, up_val, down_val)
+
+        if min_val is not None:
+            profile = np.maximum(profile, min_val)
+        if max_val is not None:
+            profile = np.minimum(profile, max_val)
+
+        cfg = PropertyConfig(
+            name=pname,
+            units=units,
+            active=active,
+            decay_rate=decay_rate,
+            reaeration_rate=reaer_rate,
+            equilibrium_conc=eq_conc,
+            oxygen_per_bod=oxygen_per_bod if pname == "DO" else 0.0,
+            min_value=min_val,
+            max_value=max_val,
+            boundary=bc,
+        )
+
+        prop_cfg[pname] = cfg
+        init_profiles[pname] = profile
 
 
-@dataclass
-class SimulationConfig:
-    dt: float
-    duration: float
-    output_interval: float
-    advection_scheme: AdvectionScheme
-    time_scheme: TimeScheme
+# ----------------------- Discharges configuration ---------------------------
 
 
-# ------------------------- Simulation class ----------------------------------
+st.header("Lateral discharges")
+
+num_dis = st.number_input(
+    "Number of lateral discharges",
+    min_value=0,
+    max_value=20,
+    value=0,
+    step=1,
+)
+discharges: list[Discharge] = []
+
+if num_dis > 0:
+    for k in range(num_dis):
+        with st.expander(f"Discharge #{k + 1}", expanded=False):
+            x_dis = st.number_input(
+                f"Location of discharge #{k + 1} (m from upstream)",
+                min_value=0.0,
+                max_value=length,
+                value=length / 2,
+                key=f"x_dis_{k}",
+            )
+            q_dis = st.number_input(
+                f"Flow rate of discharge #{k + 1} (m³/s)",
+                min_value=0.0,
+                value=1.0,
+                key=f"q_dis_{k}",
+            )
+            concs: dict[str, float] = {}
+            for pname in default_props:
+                if prop_cfg[pname].active:
+                    conc_val = st.number_input(
+                        f"{pname} concentration in discharge #{k + 1}",
+                        value=1.0 if pname == "Generic" else 0.0,
+                        key=f"dis_{k}_{pname}",
+                    )
+                    concs[pname] = conc_val
+            discharges.append(
+                Discharge(x=x_dis, flow=q_dis, concentrations=concs)
+            )
 
 
-class Simulation:
-    def __init__(
-        self,
-        grid: Grid,
-        flow: Flow,
-        sim_cfg: SimulationConfig,
-        properties: Dict[str, PropertyConfig],
-        initial_profiles: Dict[str, np.ndarray],
-        discharges: List[Discharge],
-    ):
-        self.grid = grid
-        self.flow = flow
-        self.sim_cfg = sim_cfg
-        self.properties_cfg = properties
-        self.discharges = discharges
+# ----------------------- Run simulation -------------------------------------
 
-        # active properties
-        self.prop_names = [name for name, pc in properties.items() if pc.active]
 
-        # current state (name -> 1D array)
-        self.state: Dict[str, np.ndarray] = {}
-        for name in self.prop_names:
-            prof = np.array(initial_profiles[name], dtype=float)
-            if prof.shape[0] != self.grid.nc:
-                raise ValueError(f"Initial profile for {name} has wrong length")
-            self.state[name] = prof
+if st.button("Run simulation"):
+    active_props = {k: v for k, v in prop_cfg.items() if v.active}
 
-        # main channel flow (for mixing with discharges)
-        self.Q_main = self.flow.velocity * self.grid.area_cross_section
+    if not active_props:
+        st.error("Please activate at least one property.")
+    else:
+        grid = Grid(length=length, width=width, depth=depth, nc=nc)
+        flow = Flow(
+            velocity=velocity,
+            diffusivity=diffusivity,
+            diffusion_on=diffusion_on,
+        )
+        sim_cfg = SimulationConfig(
+            dt=dt,
+            duration=duration,
+            output_interval=output_interval,
+            advection_scheme=adv_scheme,
+            time_scheme=time_scheme,
+        )
 
-        # map discharge x to nearest cell index
-        for d in self.discharges:
-            if d.x < 0 or d.x > self.grid.length:
-                raise ValueError(f"Discharge at x={d.x} outside domain")
-            # nearest cell center; subtract 0.5 cell because centers are at dx/2, 3dx/2,...
-            d.cell_index = int(round(d.x / self.grid.dx - 0.5))
-            d.cell_index = max(0, min(self.grid.nc - 1, d.cell_index))
+        # initial profiles only for active properties
+        init = {name: init_profiles[name] for name in active_props.keys()}
 
-    # -------------------- boundary conditions ---------------------------------
-
-    def _apply_boundary(self, arr: np.ndarray, bc: BoundaryCondition) -> np.ndarray:
-        """Apply BCs directly on the 1D array (in-place)."""
-        if bc.left_type == "dirichlet":
-            arr[0] = bc.left_value
-        elif bc.left_type == "neumann":
-            arr[0] = arr[1]
-
-        if bc.right_type == "dirichlet":
-            arr[-1] = bc.right_value
-        elif bc.right_type == "neumann":
-            arr[-1] = arr[-2]
-
-        return arr
-
-    # -------------------- explicit step --------------------------------------
-
-    def _explicit_step_single(self, name: str, C: np.ndarray) -> np.ndarray:
-        pc = self.properties_cfg[name]
-        v = self.flow.velocity
-        D = self.flow.diffusivity if self.flow.diffusion_on else 0.0
-        dx = self.grid.dx
-        dt = self.sim_cfg.dt
-        nc = self.grid.nc
-
-        C_old = C.copy()
-        C_new = C.copy()
-
-        # BCs on old values
-        C_old = self._apply_boundary(C_old, pc.boundary)
-
-        for i in range(1, nc - 1):
-            # advection
-            if self.sim_cfg.advection_scheme == "upwind":
-                if v >= 0:
-                    dCdx = (C_old[i] - C_old[i - 1]) / dx
-                else:
-                    dCdx = (C_old[i + 1] - C_old[i]) / dx
-            elif self.sim_cfg.advection_scheme == "central":
-                dCdx = (C_old[i + 1] - C_old[i - 1]) / (2 * dx)
-            else:  # "quick" – simple higher-order upwind-like approximation
-                if v >= 0:
-                    im2 = max(0, i - 2)
-                    dCdx = (-C_old[im2] + 5 * C_old[i - 1] + 2 * C_old[i]) / (6 * dx)
-                else:
-                    ip2 = min(nc - 1, i + 2)
-                    dCdx = (C_old[ip2] - 5 * C_old[i + 1] - 2 * C_old[i]) / (6 * dx)
-
-            adv = -v * dCdx
-
-            # diffusion
-            if self.flow.diffusion_on and D > 0:
-                d2Cdx2 = (C_old[i + 1] - 2 * C_old[i] + C_old[i - 1]) / dx**2
-                diff = D * d2Cdx2
-            else:
-                diff = 0.0
-
-            C_new[i] = C_old[i] + dt * (adv + diff)
-
-        # Re-apply BCs after update
-        C_new = self._apply_boundary(C_new, pc.boundary)
-        return C_new
-
-    # -------------------- implicit step --------------------------------------
-
-    def _implicit_step_single(self, name: str, C: np.ndarray) -> np.ndarray:
-        """
-        Fully implicit step: central advection + diffusion.
-        """
-        pc = self.properties_cfg[name]
-        v = self.flow.velocity
-        D = self.flow.diffusivity if self.flow.diffusion_on else 0.0
-        dx = self.grid.dx
-        dt = self.sim_cfg.dt
-        nc = self.grid.nc
-
-        C_old = C.copy()
-        bc = pc.boundary
-
-        a = np.zeros(nc)  # lower diagonal
-        b = np.zeros(nc)  # main diagonal
-        c = np.zeros(nc)  # upper diagonal
-        rhs = C_old.copy()
-
-        # interior nodes
-        for i in range(1, nc - 1):
-            # central advection discretization (implicit)
-            adv_left = -v * (-1 / (2 * dx))  # coeff for C_{i-1}
-            adv_center = 0.0                 # coeff for C_i
-            adv_right = -v * (1 / (2 * dx))  # coeff for C_{i+1}
-
-            diff_left = D / dx**2
-            diff_center = -2 * D / dx**2
-            diff_right = D / dx**2
-
-            a[i] = dt * (adv_left + diff_left)
-            b[i] = 1.0 + dt * (adv_center + diff_center)
-            c[i] = dt * (adv_right + diff_right)
-
-        # left boundary
-        if bc.left_type == "dirichlet":
-            a[0] = 0.0
-            b[0] = 1.0
-            c[0] = 0.0
-            rhs[0] = bc.left_value
-        else:  # neumann ~ zero gradient
-            i = 0
-            diff_left = D / dx**2
-            diff_center = -2 * D / dx**2
-            diff_right = D / dx**2
-            a[i] = 0.0
-            b[i] = 1.0 + dt * (diff_center + diff_left)
-            c[i] = dt * diff_right
-
-        # right boundary
-        if bc.right_type == "dirichlet":
-            a[-1] = 0.0
-            b[-1] = 1.0
-            c[-1] = 0.0
-            rhs[-1] = bc.right_value
-        else:  # neumann
-            i = nc - 1
-            diff_left = D / dx**2
-            diff_center = -2 * D / dx**2
-            diff_right = D / dx**2
-            a[i] = dt * diff_left
-            b[i] = 1.0 + dt * (diff_center + diff_right)
-            c[i] = 0.0
-
-        # tridiagonal solve (Thomas algorithm)
-        for i in range(1, nc):
-            if b[i - 1] == 0:
-                continue
-            m = a[i] / b[i - 1]
-            b[i] -= m * c[i - 1]
-            rhs[i] -= m * rhs[i - 1]
-
-        C_new = np.zeros(nc)
-        C_new[-1] = rhs[-1] / b[-1] if b[-1] != 0 else rhs[-1]
-        for i in range(nc - 2, -1, -1):
-            C_new[i] = (rhs[i] - c[i] * C_new[i + 1]) / b[i] if b[i] != 0 else rhs[i]
-
-        C_new = self._apply_boundary(C_new, bc)
-        return C_new
-
-    # -------------------- semi-implicit step ---------------------------------
-
-    def _semi_implicit_step_single(self, name: str, C: np.ndarray) -> np.ndarray:
-        """
-        Semi-implicit: advection explicit, diffusion implicit.
-        """
-        pc = self.properties_cfg[name]
-        v = self.flow.velocity
-        D = self.flow.diffusivity if self.flow.diffusion_on else 0.0
-        dx = self.grid.dx
-        dt = self.sim_cfg.dt
-        nc = self.grid.nc
-
-        C_old = C.copy()
-        bc = pc.boundary
-
-        # explicit advection -> RHS
-        C_tmp = C_old.copy()
-        C_tmp = self._apply_boundary(C_tmp, bc)
-        adv_term = np.zeros(nc)
-
-        for i in range(1, nc - 1):
-            if self.sim_cfg.advection_scheme == "upwind":
-                if v >= 0:
-                    dCdx = (C_tmp[i] - C_tmp[i - 1]) / dx
-                else:
-                    dCdx = (C_tmp[i + 1] - C_tmp[i]) / dx
-            elif self.sim_cfg.advection_scheme == "central":
-                dCdx = (C_tmp[i + 1] - C_tmp[i - 1]) / (2 * dx)
-            else:  # "quick" approx -> central
-                dCdx = (C_tmp[i + 1] - C_tmp[i - 1]) / (2 * dx)
-
-            adv_term[i] = -v * dCdx
-
-        rhs = C_old + dt * adv_term
-
-        # implicit diffusion
-        a = np.zeros(nc)
-        b = np.zeros(nc)
-        c = np.zeros(nc)
-
-        for i in range(1, nc - 1):
-            a[i] = dt * D / dx**2
-            b[i] = 1.0 - 2 * dt * D / dx**2
-            c[i] = dt * D / dx**2
-
-        # boundaries
-        if bc.left_type == "dirichlet":
-            a[0] = 0.0
-            b[0] = 1.0
-            c[0] = 0.0
-            rhs[0] = bc.left_value
+        try:
+            sim = Simulation(
+                grid=grid,
+                flow=flow,
+                sim_cfg=sim_cfg,
+                properties=active_props,
+                initial_profiles=init,
+                discharges=discharges,
+            )
+            times, results = sim.run()
+        except Exception as e:
+            st.error(f"Error in simulation: {e}")
         else:
-            a[0] = 0.0
-            b[0] = 1.0
-            c[0] = 0.0
+            st.success("Simulation finished.")
+            st.write(f"Number of output times: {len(times)}")
 
-        if bc.right_type == "dirichlet":
-            a[-1] = 0.0
-            b[-1] = 1.0
-            c[-1] = 0.0
-            rhs[-1] = bc.right_value
-        else:
-            a[-1] = 0.0
-            b[-1] = 1.0
-            c[-1] = 0.0
+            # time selector
+            time_index = st.slider(
+                "Select output time index",
+                min_value=0,
+                max_value=len(times) - 1,
+                value=len(times) - 1,
+            )
+            t_sel = times[time_index]
 
-        # tridiagonal solve
-        for i in range(1, nc):
-            if b[i - 1] == 0:
-                continue
-            m = a[i] / b[i - 1]
-            b[i] -= m * c[i - 1]
-            rhs[i] -= m * rhs[i - 1]
+            col_left, col_right = st.columns([2, 1])
 
-        C_new = np.zeros(nc)
-        C_new[-1] = rhs[-1] / b[-1] if b[-1] != 0 else rhs[-1]
-        for i in range(nc - 2, -1, -1):
-            C_new[i] = (rhs[i] - c[i] * C_new[i + 1]) / b[i] if b[i] != 0 else rhs[i]
+            with col_left:
+                for pname, arr in results.items():
+                    st.subheader(f"{pname} profile at t = {t_sel:.1f} s")
+                    df_plot = pd.DataFrame(
+                        {
+                            "x (m)": grid.x,
+                            f"{pname} ({prop_cfg[pname].units})": arr[time_index, :],
+                        }
+                    )
+                    st.line_chart(df_plot.set_index("x (m)"))
 
-        C_new = self._apply_boundary(C_new, bc)
-        return C_new
-
-    # -------------------- reactions & discharges -----------------------------
-
-    def _apply_reactions(self):
-        dt = self.sim_cfg.dt
-
-        # detect BOD and DO names if present
-        bod_name = None
-        do_name = None
-        for n in self.prop_names:
-            if n.lower() == "bod":
-                bod_name = n
-            if n.lower() == "do":
-                do_name = n
-
-        # independent reactions (decay, reaeration)
-        for name in self.prop_names:
-            pc = self.properties_cfg[name]
-            C = self.state[name]
-
-            # first-order decay
-            if pc.decay_rate != 0.0:
-                C *= np.exp(-pc.decay_rate * dt)
-
-            # simple equilibration toward equilibrium concentration
-            if pc.reaeration_rate != 0.0:
-                C += dt * pc.reaeration_rate * (pc.equilibrium_conc - C)
-
-            self.state[name] = C
-
-        # BOD consuming DO (after BOD decay applied)
-        if bod_name is not None and do_name is not None:
-            bod_cfg = self.properties_cfg[bod_name]
-            do_cfg = self.properties_cfg[do_name]
-
-            if do_cfg.oxygen_per_bod != 0.0 and bod_cfg.decay_rate != 0.0:
-                B = self.state[bod_name]
-                # amount of BOD removed in dt
-                dB = (1.0 - np.exp(-bod_cfg.decay_rate * dt)) * B
-                self.state[bod_name] = B - dB
-                self.state[do_name] = self.state[do_name] - do_cfg.oxygen_per_bod * dB
-
-    def _apply_discharges(self):
-        dt = self.sim_cfg.dt
-        Q_main = self.Q_main if self.Q_main > 0 else 1e-9
-
-        for d in self.discharges:
-            cell = d.cell_index
-            for name in self.prop_names:
-                C_cell = self.state[name][cell]
-                C_d = d.concentrations.get(name, C_cell)
-                vol_main = Q_main * dt
-                vol_dis = d.flow * dt
-                if vol_dis <= 0:
-                    continue
-                C_new = (C_cell * vol_main + C_d * vol_dis) / (vol_main + vol_dis)
-                self.state[name][cell] = C_new
-
-    # -------------------- public run method ----------------------------------
-
-    def run(self):
-        dt = self.sim_cfg.dt
-        duration = self.sim_cfg.duration
-        n_steps = int(np.round(duration / dt))
-        output_interval = self.sim_cfg.output_interval
-
-        output_times: List[float] = []
-        results: Dict[str, List[np.ndarray]] = {n: [] for n in self.prop_names}
-
-        t = 0.0
-        next_output = 0.0
-
-        # store initial state
-        for n in self.prop_names:
-            results[n].append(self.state[n].copy())
-        output_times.append(0.0)
-        next_output += output_interval
-
-        for step in range(1, n_steps + 1):
-            # transport
-            for name in self.prop_names:
-                C = self.state[name]
-                if self.sim_cfg.time_scheme == "explicit":
-                    C_new = self._explicit_step_single(name, C)
-                elif self.sim_cfg.time_scheme == "implicit":
-                    C_new = self._implicit_step_single(name, C)
-                else:  # semi-implicit
-                    C_new = self._semi_implicit_step_single(name, C)
-                self.state[name] = C_new
-
-            # reactions (decay, reaeration, DO–BOD coupling)
-            self._apply_reactions()
-
-            # lateral discharges
-            self._apply_discharges()
-
-            t = step * dt
-            # record if time to output
-            if t + 1e-9 >= next_output:
-                for n in self.prop_names:
-                    results[n].append(self.state[n].copy())
-                output_times.append(t)
-                next_output += output_interval
-
-        out = {n: np.vstack(v) for n, v in results.items()}
-        return np.array(output_times), out
+            with col_right:
+                st.subheader("Download results (CSV)")
+                for pname, arr in results.items():
+                    df = pd.DataFrame(arr, columns=grid.x)
+                    df.insert(0, "time (s)", times)
+                    csv = df.to_csv(index=False)
+                    st.download_button(
+                        label=f"Download {pname} as CSV",
+                        data=csv,
+                        file_name=f"{pname}_results.csv",
+                        mime="text/csv",
+                    )
