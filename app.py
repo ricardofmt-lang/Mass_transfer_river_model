@@ -143,7 +143,7 @@ def generic_decay_and_growth(
 # SIDEBAR – INPUTS
 # ---------------------------------------------------------------------
 
-st.title("1D River Transport Model – Python / Streamlit version")
+st.title("1D River Transport Model")
 st.write(
     "Configure the river, choose numerical schemes and properties, "
     "then run the simulation and explore the results."
