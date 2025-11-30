@@ -301,4 +301,139 @@ if st.button("Run simulation"):
     active_props = {k: v for k, v in prop_cfg.items() if v.active}
 
     if not active_props:
-        st.error("Please activate at lea
+        st.error("Please activate at least one property.")
+    else:
+        grid = Grid(length=length, width=width, depth=depth, nc=nc)
+        flow = Flow(
+            velocity=velocity,
+            diffusivity=diffusivity,
+            diffusion_on=diffusion_on,
+        )
+        sim_cfg = SimulationConfig(
+            dt=dt,
+            duration=duration,
+            output_interval=output_interval,
+            advection_scheme=adv_scheme,
+            time_scheme=time_scheme,
+        )
+
+        init = {name: init_profiles[name] for name in active_props.keys()}
+
+        try:
+            sim = Simulation(
+                grid=grid,
+                flow=flow,
+                sim_cfg=sim_cfg,
+                properties=active_props,
+                initial_profiles=init,
+                discharges=discharges,
+            )
+            times, results = sim.run()
+        except Exception as e:
+            st.error(f"Error in simulation: {e}")
+        else:
+            st.success("Simulation finished.")
+            st.write(f"Number of output times: {len(times)}")
+
+            # -------------------------------------------------------------
+            # 3 PARTS: (1) DOWNLOADS, (2) 2D PLOTS, (3) 3D VISUALISATIONS
+            # -------------------------------------------------------------
+            tab_2d, tab_3d, tab_dl = st.tabs(["2D plots", "3D view", "Downloads"])
+
+            # -------- (2) 2D PLOTS --------------------------------------
+            with tab_2d:
+                st.subheader("2D visualisations")
+
+                prop_names_run = list(results.keys())
+                prop_2d = st.selectbox(
+                    "Property for 2D plots", prop_names_run, key="prop_2d"
+                )
+                arr2d = results[prop_2d]
+                units = active_props[prop_2d].units
+
+                plot_type = st.selectbox(
+                    "Type of 2D plot",
+                    ["Profiles at selected times", "Time series at position", "Space–time curtain"],
+                    key="plot_type_2d",
+                )
+
+                if plot_type == "Profiles at selected times":
+                    st.markdown("Select up to 4 time indices to compare profiles.")
+                    max_idx = len(times) - 1
+                    indices = st.multiselect(
+                        "Output time indices",
+                        options=list(range(len(times))),
+                        default=[0, max_idx],
+                        help="These are indices into the output list (0 = initial).",
+                    )
+                    if not indices:
+                        indices = [0, max_idx]
+                    fig_profiles = profiles_over_space_figure(
+                        grid.x, times, arr2d, prop_2d, units, indices
+                    )
+                    st.plotly_chart(fig_profiles, use_container_width=True)
+
+                elif plot_type == "Time series at position":
+                    x_loc = st.number_input(
+                        "Spatial location x (m)",
+                        value=float(length / 2),
+                        min_value=0.0,
+                        max_value=float(length),
+                    )
+                    fig_ts, x_near = timeseries_figure(
+                        times, arr2d, prop_2d, units, x_loc, grid.x
+                    )
+                    st.write(f"Using nearest grid cell at x ≈ {x_near:.2f} m.")
+                    st.plotly_chart(fig_ts, use_container_width=True)
+
+                else:  # curtain
+                    fig_curtain = curtain_figure(grid.x, times, arr2d, prop_2d, units)
+                    st.plotly_chart(fig_curtain, use_container_width=True)
+
+            # -------- (3) 3D VIEW ---------------------------------------
+            with tab_3d:
+                st.subheader("3D river visualisation")
+
+                prop_names_run = list(results.keys())
+                prop_3d = st.selectbox(
+                    "Property for 3D view", prop_names_run, key="prop_3d"
+                )
+                arr3d = results[prop_3d]
+                units3d = active_props[prop_3d].units
+
+                t_idx = st.slider(
+                    "Select output time index for 3D view",
+                    min_value=0,
+                    max_value=len(times) - 1,
+                    value=len(times) - 1,
+                )
+                fig3d = river_surface_figure(
+                    grid.x, grid.width, arr3d, times, t_idx, prop_3d, units3d
+                )
+                st.plotly_chart(fig3d, use_container_width=True)
+
+            # -------- (1) DOWNLOADS ------------------------------------
+            with tab_dl:
+                st.subheader("Download results")
+
+                # CSV per property (students can import into Excel)
+                for pname, arr in results.items():
+                    units_p = active_props[pname].units
+                    df = pd.DataFrame(arr, columns=grid.x)
+                    df.insert(0, "time (s)", times)
+                    csv = df.to_csv(index=False)
+                    st.download_button(
+                        label=f"Download {pname} as CSV",
+                        data=csv,
+                        file_name=f"{pname}_results.csv",
+                        mime="text/csv",
+                    )
+
+                # One Excel workbook with all properties (multi-sheet)
+                excel_buf = make_excel_workbook(times, grid.x, results, active_props)
+                st.download_button(
+                    label="Download all properties as Excel workbook",
+                    data=excel_buf,
+                    file_name="river_results.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
