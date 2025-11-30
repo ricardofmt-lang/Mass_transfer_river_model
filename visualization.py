@@ -1,325 +1,257 @@
+import io
+from typing import Dict
+
 import numpy as np
 import pandas as pd
-from io import BytesIO
-import plotly.express as px
 import plotly.graph_objects as go
 
 
-def make_excel_workbook(times, x, results, prop_cfg):
-    """
-    Create a single Excel workbook with one sheet per property.
-    Each sheet: columns = [time (s), x0, x1, ..., xN].
-    """
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        for pname, arr in results.items():
-            df = pd.DataFrame(arr, columns=x)
-            df.insert(0, "time (s)", times)
-            sheet_name = pname[:31] or "Prop"
-            df.to_excel(writer, index=False, sheet_name=sheet_name)
-    buf.seek(0)
-    return buf
+def _format_time_label(t: float) -> str:
+    if t < 60:
+        return f"{t:.1f} s"
+    if t < 3600:
+        return f"{t / 60:.1f} min"
+    return f"{t / 3600:.1f} h"
 
 
-# ------------------------ 2D VISUALISATIONS ----------------------------------
+# ---------------------- 1D plots ----------------------------------------
 
 
-def profiles_over_space_figure(x, times, arr, pname, units, time_indices):
-    """
-    Multiple profiles C(x) at selected output times.
-    arr shape: (n_times, n_x)
-    time_indices: list of indices into 'times'.
-    """
-    x = np.asarray(x)
-    times = np.asarray(times)
-    data_frames = []
-    for idx in time_indices:
-        if 0 <= idx < arr.shape[0]:
-            df = pd.DataFrame(
-                {
-                    "Distance (m)": x,
-                    "Value": arr[idx, :],
-                    "Time": f"{times[idx]:.1f} s",
-                }
-            )
-            data_frames.append(df)
-    if not data_frames:
-        df = pd.DataFrame(
-            {
-                "Distance (m)": x,
-                "Value": arr[0, :],
-                "Time": f"{times[0]:.1f} s",
-            }
+def make_spatial_profile_figure(
+    x: np.ndarray,
+    values: np.ndarray,
+    t: float,
+    name: str,
+    units: str,
+) -> go.Figure:
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=values,
+            mode="lines+markers",
+            line=dict(width=2),
+            name=name,
         )
-        data_frames.append(df)
-
-    df_all = pd.concat(data_frames, ignore_index=True)
-    fig = px.line(
-        df_all,
-        x="Distance (m)",
-        y="Value",
-        color="Time",
-        labels={"Value": f"{pname} ({units})"},
     )
     fig.update_layout(
-        title=f"{pname} profiles at selected times",
-        legend_title="Time",
+        title=f"{name} along river at t={_format_time_label(t)}",
+        xaxis_title="Distance along river (m)",
+        yaxis_title=f"{name} ({units})" if units else name,
+        template="plotly_white",
     )
     return fig
 
 
-def timeseries_figure(times, arr, pname, units, x_location, x_grid):
-    """
-    Time series C(t) at a chosen spatial location x.
-    """
-    x_grid = np.asarray(x_grid)
-    times = np.asarray(times)
-    idx = int(np.argmin(np.abs(x_grid - x_location)))
-    x_near = x_grid[idx]
-    df = pd.DataFrame(
-        {
-            "Time (s)": times,
-            "Value": arr[:, idx],
-        }
-    )
-    fig = px.line(
-        df,
-        x="Time (s)",
-        y="Value",
-        labels={"Value": f"{pname} ({units})"},
+def make_time_series_figure(
+    times: np.ndarray,
+    values: np.ndarray,
+    x_loc: float,
+    name: str,
+    units: str,
+) -> go.Figure:
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=times,
+            y=values,
+            mode="lines+markers",
+            line=dict(width=2),
+            name=name,
+        )
     )
     fig.update_layout(
-        title=f"{pname} time series at x ≈ {x_near:.1f} m",
+        title=f"{name} at x={x_loc:.1f} m",
+        xaxis_title="Time (s)",
+        yaxis_title=f"{name} ({units})" if units else name,
+        template="plotly_white",
     )
-    return fig, x_near
+    return fig
 
 
-def curtain_figure(x, times, arr, pname, units):
-    """
-    Space-time "curtain" plot: C(x, t) as a heatmap.
-    arr shape: (n_times, n_x)
-    """
-    x = np.asarray(x)
-    times = np.asarray(times)
+def make_space_time_figure(
+    times: np.ndarray,
+    x: np.ndarray,
+    values_2d: np.ndarray,
+    name: str,
+    units: str,
+) -> go.Figure:
     fig = go.Figure(
         data=go.Heatmap(
             x=x,
             y=times,
-            z=arr,
+            z=values_2d,
             colorscale="Viridis",
-            colorbar=dict(title=f"{pname} ({units})"),
+            colorbar=dict(title=f"{name} ({units})" if units else name),
         )
     )
     fig.update_layout(
+        title=f"{name} – space–time map",
         xaxis_title="Distance along river (m)",
         yaxis_title="Time (s)",
-        title=f"{pname} space–time evolution",
+        template="plotly_white",
     )
     return fig
 
 
-# ------------------------ helpers for 3D -------------------------------------
+# ---------------------- Top-view river map ------------------------------
 
 
-def _compute_bed_and_water(x, width, depth, slope, n_cross):
+def river_topview_frame(
+    x: np.ndarray,
+    width: float,
+    values: np.ndarray,
+    name: str,
+    units: str,
+    n_width_points: int = 25,
+) -> go.Figure:
     """
-    Build bed and water surfaces:
-      - bed has slope (m/m)
-      - water surface at z = 0
-    """
-    x = np.asarray(x)
-    y = np.linspace(0.0, width, n_cross)
-    X, Y = np.meshgrid(x, y)
-
-    # bed elevation: upstream around -depth, then going down with slope·x
-    bed_line = -depth - slope * x
-    bed_z = np.tile(bed_line, (n_cross, 1))
-    water_z = np.zeros_like(X)
-
-    return X, Y, bed_z, water_z
-
-
-def _cell_grid_traces(x, width, water_level=0.0):
-    """
-    Draw vertical grid lines at cell boundaries on the water surface.
+    2D top view: x-axis is distance along river, y-axis is width.
+    Values are constant across width (1D model extruded laterally).
     """
     x = np.asarray(x)
-    if len(x) < 2:
-        return []
+    values = np.asarray(values)
 
-    dx = float(np.mean(np.diff(x)))
-    edges = np.empty(len(x) + 1)
-    edges[1:-1] = 0.5 * (x[:-1] + x[1:])
-    edges[0] = x[0] - dx / 2
-    edges[-1] = x[-1] + dx / 2
+    y = np.linspace(0.0, width, n_width_points)
+    field = np.tile(values, (n_width_points, 1))
 
-    traces = []
-    for xb in edges:
-        traces.append(
-            go.Scatter3d(
-                x=[xb, xb],
-                y=[0.0, width],
-                z=[water_level, water_level],
-                mode="lines",
-                line=dict(color="rgba(0,0,0,0.5)", width=2),
-                showlegend=False,
-            )
+    dx = x[1] - x[0] if len(x) > 1 else 1.0
+    edges = np.concatenate(
+        (
+            [x[0] - dx / 2.0],
+            (x[:-1] + x[1:]) / 2.0,
+            [x[-1] + dx / 2.0],
         )
-    return traces
-
-
-# ------------------------ 3D VISUALISATIONS ----------------------------------
-
-
-def river_surface_figure(x, width, depth, slope, arr, times, t_index, pname, units, n_cross=4):
-    """
-    Static 3D view of the river longitudinal profile:
-      - bed with slope
-      - water surface at z = 0, coloured by property at given time
-      - grid lines marking cells along x
-    """
-    x = np.asarray(x)
-    times = np.asarray(times)
-    X, Y, bed_z, water_z = _compute_bed_and_water(x, width, depth, slope, n_cross)
-
-    C = arr[t_index, :]
-    C2d = np.tile(C, (n_cross, 1))
-
-    bed = go.Surface(
-        x=X,
-        y=Y,
-        z=bed_z,
-        colorscale="Greys",
-        showscale=False,
-        opacity=0.4,
-    )
-    water = go.Surface(
-        x=X,
-        y=Y,
-        z=water_z,
-        surfacecolor=C2d,
-        colorscale="Viridis",
-        colorbar=dict(title=f"{pname} ({units})"),
     )
 
-    grid_traces = _cell_grid_traces(x, width)
+    fig = go.Figure(
+        data=go.Heatmap(
+            x=x,
+            y=y,
+            z=field,
+            colorscale="Viridis",
+            colorbar=dict(title=f"{name} ({units})" if units else name),
+        )
+    )
 
-    fig = go.Figure(data=[bed, water] + grid_traces)
+    for xe in edges:
+        fig.add_shape(
+            type="line",
+            x0=xe,
+            x1=xe,
+            y0=0.0,
+            y1=width,
+            line=dict(color="rgba(0,0,0,0.2)", width=1),
+        )
+
     fig.update_layout(
-        title=f"{pname} on river surface at t = {times[t_index]:.1f} s",
-        scene=dict(
-            xaxis_title="Distance along river (m)",
-            yaxis=dict(
-                visible=False,
-                showgrid=False,
-                zeroline=False,
-                showticklabels=False,
-            ),
-            zaxis_title="Elevation (m)",
-            aspectmode="data",
-        ),
+        title=f"Top view of river – {name}",
+        xaxis_title="Distance along river (m)",
+        yaxis_title="Width (m)",
+        yaxis=dict(scaleanchor="x", scaleratio=1),
+        template="plotly_white",
     )
-    # camera looking at river profile (side-ish)
-    fig.update_layout(
-        scene_camera=dict(eye=dict(x=1.6, y=0.3, z=0.8))
-    )
+    fig.update_yaxes(showticklabels=False)
     return fig
 
 
-def river_surface_animation_figure(
-    x,
-    width,
-    depth,
-    slope,
-    arr,
-    times,
-    pname,
-    units,
-    n_cross=4,
-    max_frames=60,
-    frame_duration_ms=150,
-):
+def river_topview_animation(
+    x: np.ndarray,
+    width: float,
+    values_2d: np.ndarray,
+    times: np.ndarray,
+    name: str,
+    units: str,
+    frame_duration_ms: int = 200,
+    max_frames: int = 80,
+    n_width_points: int = 25,
+) -> go.Figure:
     """
-    Animated 3D view of the river profile over time.
-    Play/pause + slider, with adjustable frame duration.
+    Animated top view. We sample at most max_frames in time.
     """
     x = np.asarray(x)
+    values_2d = np.asarray(values_2d)
     times = np.asarray(times)
-    n_times = arr.shape[0]
 
-    X, Y, bed_z, water_z = _compute_bed_and_water(x, width, depth, slope, n_cross)
+    n_times, n_cells = values_2d.shape
+    assert n_cells == x.size
 
     if n_times <= max_frames:
         frame_indices = np.arange(n_times)
     else:
         frame_indices = np.linspace(0, n_times - 1, max_frames).astype(int)
 
-    # initial frame
-    C0 = arr[frame_indices[0], :]
-    C0_2d = np.tile(C0, (n_cross, 1))
+    y = np.linspace(0.0, width, n_width_points)
 
-    bed = go.Surface(
-        x=X,
-        y=Y,
-        z=bed_z,
-        colorscale="Greys",
-        showscale=False,
-        opacity=0.4,
+    dx = x[1] - x[0] if len(x) > 1 else 1.0
+    edges = np.concatenate(
+        (
+            [x[0] - dx / 2.0],
+            (x[:-1] + x[1:]) / 2.0,
+            [x[-1] + dx / 2.0],
+        )
     )
-    water0 = go.Surface(
-        x=X,
-        y=Y,
-        z=water_z,
-        surfacecolor=C0_2d,
+
+    idx0 = frame_indices[0]
+    field0 = np.tile(values_2d[idx0, :], (n_width_points, 1))
+    vmin = float(np.nanmin(values_2d))
+    vmax = float(np.nanmax(values_2d))
+
+    heat0 = go.Heatmap(
+        x=x,
+        y=y,
+        z=field0,
         colorscale="Viridis",
-        colorbar=dict(title=f"{pname} ({units})"),
+        colorbar=dict(title=f"{name} ({units})" if units else name),
+        zmin=vmin,
+        zmax=vmax,
     )
-
-    grid_traces = _cell_grid_traces(x, width)
 
     frames = []
     for idx in frame_indices:
-        C = arr[idx, :]
-        C2d = np.tile(C, (n_cross, 1))
-        frame = go.Frame(
-            data=[
-                go.Surface(
-                    x=X,
-                    y=Y,
-                    z=bed_z,
-                    colorscale="Greys",
-                    showscale=False,
-                    opacity=0.4,
+        field = np.tile(values_2d[idx, :], (n_width_points, 1))
+        frames.append(
+            go.Frame(
+                data=[
+                    go.Heatmap(
+                        x=x,
+                        y=y,
+                        z=field,
+                        colorscale="Viridis",
+                        colorbar=dict(title=f"{name} ({units})" if units else name),
+                        zmin=vmin,
+                        zmax=vmax,
+                    )
+                ],
+                name=str(idx),
+                layout=dict(
+                    title_text=(
+                        f"Top view of river – {name} "
+                        f"(t={_format_time_label(float(times[idx]))})"
+                    )
                 ),
-                go.Surface(
-                    x=X,
-                    y=Y,
-                    z=water_z,
-                    surfacecolor=C2d,
-                    colorscale="Viridis",
-                    colorbar=dict(title=f"{pname} ({units})"),
-                ),
-            ],
-            name=str(idx),
+            )
         )
-        frames.append(frame)
 
-    fig = go.Figure(data=[bed, water0] + grid_traces, frames=frames)
+    fig = go.Figure(data=[heat0], frames=frames)
+
+    for xe in edges:
+        fig.add_shape(
+            type="line",
+            x0=xe,
+            x1=xe,
+            y0=0.0,
+            y1=width,
+            line=dict(color="rgba(0,0,0,0.2)", width=1),
+        )
 
     fig.update_layout(
-        title=f"{pname} animation along river",
-        scene=dict(
-            xaxis_title="Distance along river (m)",
-            yaxis=dict(
-                visible=False,
-                showgrid=False,
-                zeroline=False,
-                showticklabels=False,
-            ),
-            zaxis_title="Elevation (m)",
-            aspectmode="data",
-        ),
-        scene_camera=dict(eye=dict(x=1.6, y=0.3, z=0.8)),
+        title=f"Top view of river – {name} "
+              f"(t={_format_time_label(float(times[idx0]))})",
+        xaxis_title="Distance along river (m)",
+        yaxis_title="Width (m)",
+        yaxis=dict(scaleanchor="x", scaleratio=1),
+        template="plotly_white",
         updatemenus=[
             dict(
                 type="buttons",
@@ -331,7 +263,8 @@ def river_surface_animation_figure(
                         args=[
                             None,
                             dict(
-                                frame=dict(duration=frame_duration_ms, redraw=True),
+                                frame=dict(duration=frame_duration_ms,
+                                           redraw=True),
                                 fromcurrent=True,
                                 transition=dict(duration=0),
                             ),
@@ -343,16 +276,15 @@ def river_surface_animation_figure(
                         args=[
                             [None],
                             dict(
-                                frame=dict(duration=0, redraw=False),
                                 mode="immediate",
-                                transition=dict(duration=0),
+                                frame=dict(duration=0, redraw=False),
                             ),
                         ],
                     ),
                 ],
-                x=0.1,
-                y=0,
-                xanchor="right",
+                x=0.02,
+                y=1.15,
+                xanchor="left",
                 yanchor="top",
             )
         ],
@@ -369,17 +301,62 @@ def river_surface_animation_figure(
                                 transition=dict(duration=0),
                             ),
                         ],
-                        label=f"{times[idx]:.1f}",
+                        label=_format_time_label(float(times[idx])),
                     )
                     for idx in frame_indices
                 ],
-                x=0.1,
-                y=0,
-                xanchor="left",
-                yanchor="top",
-                pad=dict(t=50),
-                len=0.9,
+                active=0,
+                transition=dict(duration=0),
+                x=0.15,
+                y=1.05,
+                currentvalue=dict(prefix="Time: ", visible=True),
             )
         ],
     )
+
+    fig.update_yaxes(showticklabels=False)
     return fig
+
+
+# ---------------------- Data export -------------------------------------
+
+
+def results_to_excel(
+    x: np.ndarray,
+    times: np.ndarray,
+    results: Dict[str, np.ndarray],
+) -> bytes:
+    """Export all properties to one Excel workbook (sheet per property)."""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        for name, arr in results.items():
+            arr = np.asarray(arr)
+            df = pd.DataFrame(arr, index=times, columns=x)
+            df.index.name = "time_s"
+            df.columns.name = "x_m"
+            sheet_name = name[:31] if len(name) > 31 else name
+            df.to_excel(writer, sheet_name=sheet_name)
+    output.seek(0)
+    return output.read()
+
+
+def property_to_csv(
+    x: np.ndarray,
+    times: np.ndarray,
+    values_2d: np.ndarray,
+) -> bytes:
+    """Export a single property to CSV in long format (time,x,value)."""
+    x = np.asarray(x)
+    times = np.asarray(times)
+    values_2d = np.asarray(values_2d)
+
+    T, N = values_2d.shape
+    tt, xx = np.meshgrid(times, x, indexing="ij")
+    df = pd.DataFrame(
+        {
+            "time_s": tt.ravel(),
+            "x_m": xx.ravel(),
+            "value": values_2d.ravel(),
+        }
+    )
+    return df.to_csv(index=False).encode("utf-8")
