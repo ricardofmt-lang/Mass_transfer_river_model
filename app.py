@@ -28,7 +28,7 @@ from visualization import (
 
 
 st.set_page_config(
-    page_title="1D River Transport Model",
+    page_title="1D River Transport Model - Beta version",
     layout="wide",
 )
 
