@@ -1,494 +1,590 @@
-import streamlit as st
+import math
+from typing import Dict, List
+
 import numpy as np
-import pandas as pd
+import streamlit as st
 
 from sim_engine import (
-    Grid,
-    Flow,
-    PropertyConfig,
     BoundaryCondition,
     Discharge,
-    SimulationConfig,
+    Flow,
+    Grid,
+    PropertyConfig,
     Simulation,
+    SimulationConfig,
 )
-
 from visualization import (
-    make_excel_workbook,
-    profiles_over_space_figure,
-    timeseries_figure,
-    curtain_figure,
-    river_surface_figure,
-    river_surface_animation_figure,
+    make_spatial_profile_figure,
+    make_space_time_figure,
+    make_time_series_figure,
+    property_to_csv,
+    results_to_excel,
+    river_topview_animation,
+    river_topview_frame,
 )
 
-st.set_page_config(page_title="River Mass Transfer Model", layout="wide")
+
+st.set_page_config(
+    page_title="1D Mass Transfer River Model",
+    layout="wide",
+)
+
 
 if "sim_data" not in st.session_state:
     st.session_state["sim_data"] = None
 
-st.title("1D River Mass Transfer Model (Advection–Diffusion)")
+
+# -------------------------------------------------------------------------
+# Helper for “standard” dispersion like in the VBA model
+# -------------------------------------------------------------------------
 
 
-# ----------------------- Sidebar: grid & numerics ----------------------------
-
-
-st.sidebar.header("Grid and Flow")
-length = st.sidebar.number_input("River length (m)", value=1000.0, min_value=1.0)
-nc = st.sidebar.slider("Number of cells", min_value=10, max_value=500, value=100, step=10)
-width = st.sidebar.number_input("Average width (m)", value=10.0, min_value=0.1)
-depth = st.sidebar.number_input("Average depth (m)", value=2.0, min_value=0.1)
-slope = st.sidebar.number_input("River bed slope (m/m)", value=0.001, min_value=0.0, format="%.5f")
-
-velocity = st.sidebar.number_input("Mean velocity (m/s)", value=0.5)
-diffusivity = st.sidebar.number_input("Longitudinal diffusivity (m²/s)", value=1.0, min_value=0.0)
-diffusion_on = st.sidebar.checkbox("Include diffusion", value=True)
-
-st.sidebar.header("Time and Numerics")
-dt = st.sidebar.number_input("Time step Δt (s)", value=60.0, min_value=1e-6, format="%.6f")
-duration = st.sidebar.number_input("Total simulation time (s)", value=3600.0, min_value=dt)
-output_interval = st.sidebar.number_input("Output interval (s)", value=600.0, min_value=dt)
-
-adv_scheme = st.sidebar.selectbox("Advection scheme", ["upwind", "central", "quick"])
-time_scheme = st.sidebar.selectbox("Time discretization", ["explicit", "implicit", "semi-implicit"])
-
-
-# ----------------------- Properties configuration ---------------------------
-
-
-st.header("Properties configuration")
-
-default_props = ["Generic", "Temperature", "DO", "BOD", "CO2"]
-prop_cfg: dict[str, PropertyConfig] = {}
-init_profiles: dict[str, np.ndarray] = {}
-
-grid_preview = Grid(length=length, width=width, depth=depth, nc=nc, slope=slope)
-x_centers = grid_preview.x
-
-with st.expander("Global notes / help", expanded=False):
-    st.markdown(
-        "- All properties use the same **1D grid** and **flow conditions**.\n"
-        "- Initial profiles can be `Uniform`, `Gaussian pulse`, or a `Step`.\n"
-        "- Decay, reaeration, equilibrium concentration, and BOD–DO coupling are all configurable.\n"
-        "- Visualisations are available **after** you run the simulation."
-    )
-
-for pname in default_props:
-    with st.expander(f"{pname} settings", expanded=(pname == "Generic")):
-        active = st.checkbox(
-            f"Activate {pname}",
-            value=(pname in ["Generic", "Temperature"]),
-            key=f"active_{pname}",
-        )
-        units = st.text_input(
-            f"{pname} units",
-            value="mg/L" if pname != "Temperature" else "°C",
-            key=f"units_{pname}",
+def parse_diffusivity(input_str: str, velocity: float, width: float) -> float:
+    s = input_str.strip().lower()
+    if s in {"std", "standard", "auto"}:
+        # same idea as “standard” option: proportional to U * width
+        return 0.1 * abs(velocity) * max(width, 1e-6)
+    try:
+        return float(s)
+    except ValueError:
+        raise ValueError(
+            "Dispersion must be a number or 'standard' / 'std'."
         )
 
-        if not active:
-            cfg = PropertyConfig(name=pname, active=False, units=units)
-            prop_cfg[pname] = cfg
-            continue
 
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            decay_rate = st.number_input(
-                f"{pname} decay rate k (1/s)",
-                value=0.0 if pname != "BOD" else 1.0 / (30 * 24 * 3600),
-                format="%.3e",
-                key=f"decay_{pname}",
-            )
-        with col2:
-            reaer_rate = st.number_input(
-                f"{pname} reaeration / equilibration rate (1/s)",
-                value=0.0 if pname not in ["DO", "CO2"] else 1.0 / (2 * 24 * 3600),
-                format="%.3e",
-                key=f"reaer_{pname}",
-            )
-        with col3:
-            eq_conc = st.number_input(
-                f"{pname} equilibrium conc. (for reaeration)",
-                value=8.0 if pname == "DO" else 0.0,
-                key=f"eq_{pname}",
-            )
-
-        oxygen_per_bod = 0.0
-        if pname == "DO":
-            oxygen_per_bod = st.number_input(
-                "O₂ consumption per BOD unit (mg O₂ / mg BOD)",
-                value=1.0,
-                key="o2_per_bod",
-            )
-
-        colb1, colb2 = st.columns(2)
-        with colb1:
-            min_val = st.number_input(
-                f"{pname} minimum (optional)",
-                value=0.0,
-                key=f"min_{pname}",
-            )
-        with colb2:
-            max_val = st.number_input(
-                f"{pname} maximum (optional, 0 = ignore)",
-                value=0.0,
-                key=f"max_{pname}",
-            )
-        if max_val <= 0:
-            max_val = None
-
-        st.subheader(f"{pname} boundary conditions")
-        colL, colR = st.columns(2)
-        with colL:
-            left_type = st.selectbox(
-                f"{pname} left BC type",
-                ["dirichlet", "neumann"],
-                key=f"bcLtype_{pname}",
-            )
-            left_val = st.number_input(
-                f"{pname} left BC value",
-                value=1.0 if pname == "Generic" else 0.0,
-                key=f"bcLval_{pname}",
-            )
-        with colR:
-            right_type = st.selectbox(
-                f"{pname} right BC type",
-                ["dirichlet", "neumann"],
-                index=0,
-                key=f"bcRtype_{pname}",
-            )
-            right_val = st.number_input(
-                f"{pname} right BC value",
-                value=0.0,
-                key=f"bcRval_{pname}",
-            )
-
-        bc = BoundaryCondition(
-            left_type=left_type,
-            left_value=left_val,
-            right_type=right_type,
-            right_value=right_val,
-        )
-
-        st.subheader(f"{pname} initial condition")
-        ic_type = st.selectbox(
-            f"{pname} initial shape",
-            ["Uniform", "Gaussian pulse", "Step from upstream"],
-            key=f"ic_type_{pname}",
-        )
-
-        if ic_type == "Uniform":
-            base = st.number_input(
-                f"{pname} uniform value",
-                value=0.0,
-                key=f"ic_uniform_{pname}",
-            )
-            profile = np.ones_like(x_centers) * base
-        elif ic_type == "Gaussian pulse":
-            base = st.number_input(
-                f"{pname} background value",
-                value=0.0,
-                key=f"ic_bg_{pname}",
-            )
-            peak = st.number_input(
-                f"{pname} peak value",
-                value=1.0,
-                key=f"ic_peak_{pname}",
-            )
-            center = st.number_input(
-                f"{pname} pulse center (m)",
-                value=length / 2,
-                min_value=0.0,
-                max_value=length,
-                key=f"ic_center_{pname}",
-            )
-            width_ic = st.number_input(
-                f"{pname} pulse width (m)",
-                value=length / 10,
-                min_value=1e-6,
-                key=f"ic_width_{pname}",
-            )
-            profile = base + peak * np.exp(-(x_centers - center) ** 2 / (2 * width_ic**2))
-        else:
-            up_val = st.number_input(
-                f"{pname} upstream (left) initial value",
-                value=1.0,
-                key=f"ic_up_{pname}",
-            )
-            down_val = st.number_input(
-                f"{pname} downstream (right) initial value",
-                value=0.0,
-                key=f"ic_down_{pname}",
-            )
-            step_pos = st.number_input(
-                f"{pname} step position (m)",
-                value=length / 2,
-                min_value=0.0,
-                max_value=length,
-                key=f"ic_step_{pname}",
-            )
-            profile = np.where(x_centers <= step_pos, up_val, down_val)
-
-        if min_val is not None:
-            profile = np.maximum(profile, min_val)
-        if max_val is not None:
-            profile = np.minimum(profile, max_val)
-
-        cfg = PropertyConfig(
-            name=pname,
-            units=units,
-            active=active,
-            decay_rate=decay_rate,
-            reaeration_rate=reaer_rate,
-            equilibrium_conc=eq_conc,
-            oxygen_per_bod=oxygen_per_bod if pname == "DO" else 0.0,
-            min_value=min_val,
-            max_value=max_val,
-            boundary=bc,
-        )
-
-        prop_cfg[pname] = cfg
-        init_profiles[pname] = profile
+# -------------------------------------------------------------------------
+# Sidebar – configuration
+# -------------------------------------------------------------------------
 
 
-# ----------------------- Discharges configuration ---------------------------
+st.sidebar.title("Model setup")
 
+st.sidebar.subheader("1. River geometry")
+length = st.sidebar.number_input(
+    "River length (m)",
+    min_value=10.0,
+    value=10_000.0,
+    step=100.0,
+)
+width = st.sidebar.number_input(
+    "Average width (m)",
+    min_value=0.1,
+    value=10.0,
+)
+depth = st.sidebar.number_input(
+    "Average depth (m)",
+    min_value=0.1,
+    value=2.0,
+)
+slope = st.sidebar.number_input(
+    "Bed slope (m/m)",
+    min_value=0.0,
+    value=0.001,
+    format="%.5f",
+)
 
-st.header("Lateral discharges")
-
-num_dis = st.number_input(
-    "Number of lateral discharges",
-    min_value=0,
-    max_value=20,
-    value=0,
+nc = st.sidebar.number_input(
+    "Number of spatial cells",
+    min_value=5,
+    max_value=500,
+    value=50,
     step=1,
 )
-discharges: list[Discharge] = []
 
-if num_dis > 0:
-    for k in range(num_dis):
-        with st.expander(f"Discharge #{k + 1}", expanded=False):
-            x_dis = st.number_input(
-                f"Location of discharge #{k + 1} (m from upstream)",
-                min_value=0.0,
-                max_value=length,
-                value=length / 2,
-                key=f"x_dis_{k}",
+st.sidebar.subheader("2. Flow & mixing")
+velocity = st.sidebar.number_input(
+    "Mean velocity U (m/s)",
+    value=0.5,
+    format="%.3f",
+)
+diffusivity_input = st.sidebar.text_input(
+    "Longitudinal dispersion D (m²/s) or 'standard'",
+    value="standard",
+)
+advection_on = st.sidebar.checkbox("Include advection", value=True)
+diffusion_on = st.sidebar.checkbox("Include dispersion", value=True)
+
+st.sidebar.subheader("3. Numerical controls")
+dt = st.sidebar.number_input(
+    "Time step Δt (s)",
+    min_value=0.001,
+    value=60.0,
+)
+duration_h = st.sidebar.number_input(
+    "Simulation duration (h)",
+    min_value=0.01,
+    value=24.0,
+)
+duration = duration_h * 3600.0
+
+output_every_min = st.sidebar.number_input(
+    "Store results every (min)",
+    min_value=0.1,
+    value=10.0,
+)
+output_interval = output_every_min * 60.0
+
+advection_scheme = st.sidebar.selectbox(
+    "Advection scheme",
+    ["upwind", "central", "quick"],
+    index=0,
+)
+time_scheme = st.sidebar.selectbox(
+    "Time discretisation",
+    ["explicit", "semi-implicit", "implicit"],
+    index=0,
+)
+
+st.sidebar.subheader("4. Properties (DO, BOD, CO₂, T)")
+
+property_names = ["Temperature", "DO", "BOD", "CO2"]
+
+prop_settings: Dict[str, Dict] = {}
+
+# Default values roughly in line with the teaching examples
+default_units = {
+    "Temperature": "°C",
+    "DO": "mg/L",
+    "BOD": "mg/L",
+    "CO2": "mg/L",
+}
+default_init = {
+    "Temperature": 20.0,
+    "DO": 8.0,
+    "BOD": 2.0,
+    "CO2": 0.0,
+}
+default_left = {
+    "Temperature": 20.0,
+    "DO": 8.0,
+    "BOD": 2.0,
+    "CO2": 0.0,
+}
+default_right = {
+    "Temperature": 20.0,
+    "DO": 8.0,
+    "BOD": 2.0,
+    "CO2": 0.0,
+}
+
+for name in property_names:
+    with st.sidebar.expander(f"{name} settings", expanded=(name in ["DO", "BOD"])):
+        active = st.checkbox(
+            f"Include {name}",
+            value=True if name in ["Temperature", "DO", "BOD"] else False,
+            key=f"{name}_active",
+        )
+        units = st.text_input(
+            "Units",
+            value=default_units[name],
+            key=f"{name}_units",
+        )
+        init_val = st.number_input(
+            "Initial value in river",
+            value=default_init[name],
+            key=f"{name}_init",
+        )
+        left_bc_val = st.number_input(
+            "Upstream boundary value",
+            value=default_left[name],
+            key=f"{name}_left_bc",
+        )
+        right_bc_val = st.number_input(
+            "Downstream boundary value",
+            value=default_right[name],
+            key=f"{name}_right_bc",
+        )
+        left_bc_type = st.selectbox(
+            "Left boundary type",
+            ["dirichlet", "neumann"],
+            index=0,
+            key=f"{name}_left_type",
+        )
+        right_bc_type = st.selectbox(
+            "Right boundary type",
+            ["dirichlet", "neumann"],
+            index=0,
+            key=f"{name}_right_type",
+        )
+
+        min_val = st.number_input(
+            "Minimum value (optional)",
+            value=0.0 if name in ["DO", "BOD", "CO2"] else -1000.0,
+            key=f"{name}_min_val",
+        )
+        max_val = st.number_input(
+            "Maximum value (0 = no limit)",
+            value=0.0,
+            key=f"{name}_max_val",
+        )
+
+        decay_rate_per_day = 0.0
+        reaer_per_day = 0.0
+        eq_conc = 0.0
+        oxygen_per_bod = 0.0
+
+        if name == "BOD":
+            decay_rate_per_day = st.number_input(
+                "BOD decay rate k_d (1/day)",
+                value=0.1,
+                key="BOD_decay_per_day",
             )
-            q_dis = st.number_input(
-                f"Flow rate of discharge #{k + 1} (m³/s)",
-                min_value=0.0,
-                value=1.0,
-                key=f"q_dis_{k}",
+        elif name == "DO":
+            eq_conc = st.number_input(
+                "Equilibrium DO (mg/L)",
+                value=8.0,
+                key="DO_eq",
             )
-            concs: dict[str, float] = {}
-            for pname in default_props:
-                if prop_cfg[pname].active:
-                    conc_val = st.number_input(
-                        f"{pname} concentration in discharge #{k + 1}",
-                        value=1.0 if pname == "Generic" else 0.0,
-                        key=f"dis_{k}_{pname}",
-                    )
-                    concs[pname] = conc_val
-            discharges.append(
-                Discharge(x=x_dis, flow=q_dis, concentrations=concs)
+            reaer_per_day = st.number_input(
+                "Reaeration rate k₂ (1/day)",
+                value=0.5,
+                key="DO_k2",
+            )
+            oxygen_per_bod = st.number_input(
+                "O₂ required per BOD (mgO₂/mgBOD)",
+                value=1.5,
+                key="DO_o2_per_bod",
+            )
+        elif name == "CO2":
+            eq_conc = st.number_input(
+                "Equilibrium CO₂ (mg/L)",
+                value=0.0,
+                key="CO2_eq",
+            )
+            reaer_per_day = st.number_input(
+                "Gas exchange rate (1/day)",
+                value=0.0,
+                key="CO2_k2",
             )
 
+        prop_settings[name] = dict(
+            active=active,
+            units=units,
+            init_val=init_val,
+            left_bc_type=left_bc_type,
+            left_bc_val=left_bc_val,
+            right_bc_type=right_bc_type,
+            right_bc_val=right_bc_val,
+            min_val=min_val,
+            max_val=max_val,
+            decay_rate_per_day=decay_rate_per_day,
+            reaer_per_day=reaer_per_day,
+            eq_conc=eq_conc,
+            oxygen_per_bod=oxygen_per_bod,
+        )
 
-# ----------------------- Run simulation (store in session) ------------------
+st.sidebar.subheader("5. Point discharges (optional)")
+with st.sidebar.expander("Configure discharges"):
+    n_discharges = st.number_input(
+        "Number of discharges",
+        min_value=0,
+        max_value=10,
+        value=0,
+        step=1,
+        key="n_discharges",
+    )
+
+    discharge_configs: List[Discharge] = []
+    for i in range(n_discharges):
+        st.markdown(f"**Discharge #{i + 1}**")
+        x_d = st.number_input(
+            f"Location x (m) for discharge #{i + 1}",
+            min_value=0.0,
+            max_value=float(length),
+            value=float(length) * (i + 1) / (n_discharges + 1) if n_discharges > 0 else 0.0,
+            key=f"d{i}_x",
+        )
+        q_d = st.number_input(
+            f"Flow Q (m³/s) for discharge #{i + 1}",
+            min_value=0.0,
+            value=1.0,
+            key=f"d{i}_q",
+        )
+
+        concs: Dict[str, float] = {}
+        for pname in property_names:
+            concs[pname] = st.number_input(
+                f"{pname} at discharge #{i + 1}",
+                value=default_init[pname],
+                key=f"d{i}_{pname}_conc",
+            )
+
+        discharge_configs.append(
+            Discharge(x=x_d, flow=q_d, concentrations=concs)
+        )
+
+# -------------------------------------------------------------------------
+# Build and run simulation
+# -------------------------------------------------------------------------
 
 
-if st.button("Run simulation"):
-    active_props = {k: v for k, v in prop_cfg.items() if v.active}
+run_button = st.sidebar.button("Run simulation", type="primary")
 
-    if not active_props:
-        st.error("Please activate at least one property.")
+
+def build_and_run_simulation():
+    diffusivity = parse_diffusivity(diffusivity_input, velocity, width)
+
+    grid = Grid(length=length, width=width, depth=depth, nc=int(nc))
+
+    flow = Flow(
+        velocity=velocity,
+        diffusivity=diffusivity,
+        slope=slope,
+        advection_on=advection_on,
+        diffusion_on=diffusion_on,
+    )
+
+    sim_cfg = SimulationConfig(
+        dt=dt,
+        duration=duration,
+        output_interval=output_interval,
+        advection_scheme=advection_scheme,
+        time_scheme=time_scheme,
+    )
+
+    properties: Dict[str, PropertyConfig] = {}
+    initial_profiles: Dict[str, np.ndarray] = {}
+
+    for name in property_names:
+        cfg = prop_settings[name]
+        if not cfg["active"]:
+            continue
+
+        bc = BoundaryCondition(
+            left_type=cfg["left_bc_type"],
+            left_value=cfg["left_bc_val"],
+            right_type=cfg["right_bc_type"],
+            right_value=cfg["right_bc_val"],
+        )
+
+        decay_rate = cfg["decay_rate_per_day"] / 86400.0
+        reaer_rate = cfg["reaer_per_day"] / 86400.0
+
+        p = PropertyConfig(
+            name=name,
+            units=cfg["units"],
+            active=True,
+            decay_rate=decay_rate,
+            reaeration_rate=reaer_rate,
+            equilibrium_conc=cfg["eq_conc"],
+            oxygen_per_bod=cfg["oxygen_per_bod"] if name == "DO" else 0.0,
+            min_value=cfg["min_val"],
+            max_value=cfg["max_val"] if cfg["max_val"] > 0.0 else None,
+            boundary=bc,
+        )
+        properties[name] = p
+
+        initial_profiles[name] = np.full(grid.nc, cfg["init_val"], dtype=float)
+
+    discharges = discharge_configs
+
+    sim = Simulation(
+        grid=grid,
+        flow=flow,
+        sim_cfg=sim_cfg,
+        properties=properties,
+        initial_profiles=initial_profiles,
+        discharges=discharges,
+    )
+    times, results = sim.run()
+
+    st.session_state["sim_data"] = dict(
+        grid=grid,
+        flow=flow,
+        cfg=sim_cfg,
+        properties=properties,
+        times=times,
+        results=results,
+    )
+
+
+if run_button:
+    try:
+        build_and_run_simulation()
+    except Exception as e:
+        st.error(f"Error during simulation: {e}")
+
+# -------------------------------------------------------------------------
+# Main layout – results
+# -------------------------------------------------------------------------
+
+
+st.title("1D Mass Transfer River Model")
+
+sim_data = st.session_state["sim_data"]
+
+if sim_data is None:
+    st.info("Configure the model on the left and click **Run simulation**.")
+    st.stop()
+
+grid: Grid = sim_data["grid"]
+properties: Dict[str, PropertyConfig] = sim_data["properties"]
+times: np.ndarray = sim_data["times"]
+results: Dict[str, np.ndarray] = sim_data["results"]
+
+active_prop_names = [n for n, cfg in properties.items() if cfg.active]
+
+if not active_prop_names:
+    st.warning("No active properties. Activate at least one in the sidebar.")
+    st.stop()
+
+tab1, tab2, tab3 = st.tabs(["1D plots", "River map (top view)", "Downloads"])
+
+# ---------------------- Tab 1: 1D plots ---------------------------------
+
+with tab1:
+    st.subheader("1D views")
+
+    prop_name_1d = st.selectbox(
+        "Property",
+        active_prop_names,
+        key="prop_1d",
+    )
+    prop_cfg = properties[prop_name_1d]
+    arr = results[prop_name_1d]  # shape (n_times, nc)
+
+    plot_type = st.radio(
+        "Plot type",
+        ["Profile at fixed time", "Time series at fixed position", "Space–time map"],
+        key="plot_type_1d",
+        horizontal=True,
+    )
+
+    if plot_type == "Profile at fixed time":
+        t_idx = st.slider(
+            "Time step index",
+            min_value=0,
+            max_value=len(times) - 1,
+            value=len(times) - 1,
+            key="t_idx_profile",
+        )
+        fig = make_spatial_profile_figure(
+            grid.x,
+            arr[t_idx, :],
+            float(times[t_idx]),
+            prop_name_1d,
+            prop_cfg.units,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    elif plot_type == "Time series at fixed position":
+        x_loc = st.slider(
+            "Location along river (m)",
+            min_value=float(grid.x[0]),
+            max_value=float(grid.x[-1]),
+            value=float(grid.x[len(grid.x) // 2]),
+            key="x_loc_ts",
+        )
+        idx = int(np.argmin(np.abs(grid.x - x_loc)))
+        fig = make_time_series_figure(
+            times,
+            arr[:, idx],
+            float(grid.x[idx]),
+            prop_name_1d,
+            prop_cfg.units,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    else:  # Space–time map
+        fig = make_space_time_figure(
+            times,
+            grid.x,
+            arr,
+            prop_name_1d,
+            prop_cfg.units,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+# ---------------------- Tab 2: Top-view map -----------------------------
+
+with tab2:
+    st.subheader("Top view of river")
+
+    prop_name_map = st.selectbox(
+        "Property",
+        active_prop_names,
+        key="prop_map",
+    )
+    prop_cfg_map = properties[prop_name_map]
+    arr_map = results[prop_name_map]
+
+    mode_map = st.radio(
+        "Mode",
+        ["Static frame", "Animated"],
+        key="mode_map",
+        horizontal=True,
+    )
+
+    if mode_map == "Static frame":
+        t_idx_map = st.slider(
+            "Time step index",
+            min_value=0,
+            max_value=len(times) - 1,
+            value=len(times) - 1,
+            key="t_idx_map",
+        )
+        fig = river_topview_frame(
+            x=grid.x,
+            width=grid.width,
+            values=arr_map[t_idx_map, :],
+            name=prop_name_map,
+            units=prop_cfg_map.units,
+        )
+        st.plotly_chart(fig, use_container_width=True)
     else:
-        grid = Grid(length=length, width=width, depth=depth, nc=nc, slope=slope)
-        flow = Flow(
-            velocity=velocity,
-            diffusivity=diffusivity,
-            diffusion_on=diffusion_on,
+        speed = st.slider(
+            "Animation speed factor (1 = normal)",
+            min_value=0.25,
+            max_value=4.0,
+            value=1.0,
+            step=0.25,
+            key="map_speed",
         )
-        sim_cfg = SimulationConfig(
-            dt=dt,
-            duration=duration,
-            output_interval=output_interval,
-            advection_scheme=adv_scheme,
-            time_scheme=time_scheme,
+        frame_duration_ms = int(300 / speed)
+        fig = river_topview_animation(
+            x=grid.x,
+            width=grid.width,
+            values_2d=arr_map,
+            times=times,
+            name=prop_name_map,
+            units=prop_cfg_map.units,
+            frame_duration_ms=frame_duration_ms,
         )
+        st.plotly_chart(fig, use_container_width=True)
 
-        init = {name: init_profiles[name] for name in active_props.keys()}
+# ---------------------- Tab 3: Downloads --------------------------------
 
-        try:
-            sim = Simulation(
-                grid=grid,
-                flow=flow,
-                sim_cfg=sim_cfg,
-                properties=active_props,
-                initial_profiles=init,
-                discharges=discharges,
-            )
-            times, results = sim.run()
-        except Exception as e:
-            st.error(f"Error in simulation: {e}")
-        else:
-            st.session_state["sim_data"] = {
-                "times": times,
-                "results": results,
-                "x": grid.x,
-                "width": grid.width,
-                "depth": grid.depth,
-                "slope": grid.slope,
-                "props_cfg": active_props,
-            }
-            st.success("Simulation finished. Scroll down to see results.")
+with tab3:
+    st.subheader("Export results")
 
+    excel_bytes = results_to_excel(
+        x=grid.x,
+        times=times,
+        results=results,
+    )
+    st.download_button(
+        "Download all results as Excel",
+        data=excel_bytes,
+        file_name="river_results.xlsx",
+        mime=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+    )
 
-# ----------------------- Visualisations and downloads -----------------------
-
-
-sim_data = st.session_state.get("sim_data")
-
-if sim_data is not None:
-    times = sim_data["times"]
-    results = sim_data["results"]
-    grid_x = sim_data["x"]
-    grid_width = sim_data["width"]
-    grid_depth = sim_data["depth"]
-    props_cfg_run = sim_data["props_cfg"]
-    grid_slope = sim_data["slope"]
-    
-    tab_2d, tab_3d, tab_dl = st.tabs(["2D plots", "3D view", "Downloads"])
-
-    # -------- 2D PLOTS -------------------------------------------------------
-    with tab_2d:
-        st.subheader("2D visualisations")
-
-        prop_names_run = list(results.keys())
-        prop_2d = st.selectbox(
-            "Property for 2D plots", prop_names_run, key="prop_2d"
-        )
-        arr2d = results[prop_2d]
-        units2d = props_cfg_run[prop_2d].units
-
-        plot_type = st.selectbox(
-            "Type of 2D plot",
-            ["Profiles at selected times", "Time series at position", "Space–time curtain"],
-            key="plot_type_2d",
-        )
-
-        if plot_type == "Profiles at selected times":
-            st.markdown("Select up to 4 time indices to compare profiles.")
-            max_idx = len(times) - 1
-            indices = st.multiselect(
-                "Output time indices",
-                options=list(range(len(times))),
-                default=[0, max_idx],
-                help="Indices into the output list (0 = initial).",
-            )
-            if not indices:
-                indices = [0, max_idx]
-            fig_profiles = profiles_over_space_figure(
-                grid_x, times, arr2d, prop_2d, units2d, indices
-            )
-            st.plotly_chart(fig_profiles, use_container_width=True)
-
-        elif plot_type == "Time series at position":
-            x_loc = st.number_input(
-                "Spatial location x (m)",
-                value=float(length / 2),
-                min_value=0.0,
-                max_value=float(length),
-            )
-            fig_ts, x_near = timeseries_figure(
-                times, arr2d, prop_2d, units2d, x_loc, grid_x
-            )
-            st.write(f"Using nearest grid cell at x ≈ {x_near:.2f} m.")
-            st.plotly_chart(fig_ts, use_container_width=True)
-
-        else:
-            fig_curtain = curtain_figure(grid_x, times, arr2d, prop_2d, units2d)
-            st.plotly_chart(fig_curtain, use_container_width=True)
-
-    # -------- 3D VIEW --------------------------------------------------------
-    with tab_3d:
-        st.subheader("3D river visualisation")
-    
-        prop_names_run = list(results.keys())
-        prop_3d = st.selectbox(
-            "Property for 3D view", prop_names_run, key="prop_3d"
-        )
-        arr3d = results[prop_3d]
-        units3d = props_cfg_run[prop_3d].units
-    
-        mode_3d = st.radio(
-            "3D mode",
-            ["Static (slider)", "Animated"],
-            horizontal=True,
-            key="mode_3d",
-        )
-    
-        if mode_3d == "Static (slider)":
-            t_idx = st.slider(
-                "Select output time index",
-                min_value=0,
-                max_value=len(times) - 1,
-                value=len(times) - 1,
-            )
-            fig3d = river_surface_figure(
-                grid_x,
-                grid_width,
-                grid_depth,
-                grid_slope,      # NEW
-                arr3d,
-                times,
-                t_idx,
-                prop_3d,
-                units3d,
-            )
-            st.plotly_chart(fig3d, use_container_width=True)
-        else:
-            speed = st.slider(
-                "Animation speed (ms per frame)",
-                min_value=50,
-                max_value=1000,
-                value=150,
-                step=50,
-            )
-            fig_anim = river_surface_animation_figure(
-                grid_x,
-                grid_width,
-                grid_depth,
-                grid_slope,      # NEW
-                arr3d,
-                times,
-                prop_3d,
-                units3d,
-                frame_duration_ms=speed,
-            )
-            st.plotly_chart(fig_anim, use_container_width=True)
-
-    # -------- DOWNLOADS ------------------------------------------------------
-    with tab_dl:
-        st.subheader("Download results")
-
-        for pname, arr in results.items():
-            df = pd.DataFrame(arr, columns=grid_x)
-            df.insert(0, "time (s)", times)
-            csv = df.to_csv(index=False)
-            st.download_button(
-                label=f"Download {pname} as CSV",
-                data=csv,
-                file_name=f"{pname}_results.csv",
-                mime="text/csv",
-            )
-
-        excel_buf = make_excel_workbook(times, grid_x, results, props_cfg_run)
-        st.download_button(
-            label="Download all properties as Excel workbook",
-            data=excel_buf,
-            file_name="river_results.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-else:
-    st.info("Configure the model and click **Run simulation** to see results.")
+    prop_name_csv = st.selectbox(
+        "Property for CSV export",
+        active_prop_names,
+        key="prop_csv",
+    )
+    csv_bytes = property_to_csv(
+        x=grid.x,
+        times=times,
+        values_2d=results[prop_name_csv],
+    )
+    st.download_button(
+        f"Download {prop_name_csv} as CSV (time, x, value)",
+        data=csv_bytes,
+        file_name=f"{prop_name_csv}_results.csv",
+        mime="text/csv",
+    )
