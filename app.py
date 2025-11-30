@@ -12,6 +12,14 @@ from sim_engine import (
     Simulation,
 )
 
+from visualization import (
+    make_excel_workbook,
+    profiles_over_space_figure,
+    timeseries_figure,
+    curtain_figure,
+    river_surface_figure,
+)
+
 st.set_page_config(page_title="River Mass Transfer Model", layout="wide")
 
 st.title("1D River Mass Transfer Model (Advection–Diffusion)")
@@ -50,13 +58,14 @@ init_profiles: dict[str, np.ndarray] = {}
 
 # grid preview for initial conditions
 grid_preview = Grid(length=length, width=width, depth=depth, nc=nc)
-x = grid_preview.x
+x_centers = grid_preview.x
 
 with st.expander("Global notes / help", expanded=False):
     st.markdown(
         "- All properties use the same **1D grid** and **flow conditions**.\n"
         "- Initial profiles can be `Uniform`, `Gaussian pulse`, or a `Step`.\n"
-        "- Decay, reaeration, equilibrium concentration, and BOD–DO coupling are all configurable."
+        "- Decay, reaeration, equilibrium concentration, and BOD–DO coupling are all configurable.\n"
+        "- The 2D plots reproduce the typical profiles and space–time plots shown in the course text.:contentReference[oaicite:1]{index=1}"
     )
 
 for pname in default_props:
@@ -173,7 +182,7 @@ for pname in default_props:
                 value=0.0,
                 key=f"ic_uniform_{pname}",
             )
-            profile = np.ones_like(x) * base
+            profile = np.ones_like(x_centers) * base
         elif ic_type == "Gaussian pulse":
             base = st.number_input(
                 f"{pname} background value",
@@ -192,13 +201,13 @@ for pname in default_props:
                 max_value=length,
                 key=f"ic_center_{pname}",
             )
-            width = st.number_input(
+            width_ic = st.number_input(
                 f"{pname} pulse width (m)",
                 value=length / 10,
                 min_value=1e-6,
                 key=f"ic_width_{pname}",
             )
-            profile = base + peak * np.exp(-(x - center) ** 2 / (2 * width**2))
+            profile = base + peak * np.exp(-(x_centers - center) ** 2 / (2 * width_ic**2))
         else:  # Step from upstream
             up_val = st.number_input(
                 f"{pname} upstream (left) initial value",
@@ -217,7 +226,7 @@ for pname in default_props:
                 max_value=length,
                 key=f"ic_step_{pname}",
             )
-            profile = np.where(x <= step_pos, up_val, down_val)
+            profile = np.where(x_centers <= step_pos, up_val, down_val)
 
         if min_val is not None:
             profile = np.maximum(profile, min_val)
@@ -292,72 +301,4 @@ if st.button("Run simulation"):
     active_props = {k: v for k, v in prop_cfg.items() if v.active}
 
     if not active_props:
-        st.error("Please activate at least one property.")
-    else:
-        grid = Grid(length=length, width=width, depth=depth, nc=nc)
-        flow = Flow(
-            velocity=velocity,
-            diffusivity=diffusivity,
-            diffusion_on=diffusion_on,
-        )
-        sim_cfg = SimulationConfig(
-            dt=dt,
-            duration=duration,
-            output_interval=output_interval,
-            advection_scheme=adv_scheme,
-            time_scheme=time_scheme,
-        )
-
-        # initial profiles only for active properties
-        init = {name: init_profiles[name] for name in active_props.keys()}
-
-        try:
-            sim = Simulation(
-                grid=grid,
-                flow=flow,
-                sim_cfg=sim_cfg,
-                properties=active_props,
-                initial_profiles=init,
-                discharges=discharges,
-            )
-            times, results = sim.run()
-        except Exception as e:
-            st.error(f"Error in simulation: {e}")
-        else:
-            st.success("Simulation finished.")
-            st.write(f"Number of output times: {len(times)}")
-
-            # time selector
-            time_index = st.slider(
-                "Select output time index",
-                min_value=0,
-                max_value=len(times) - 1,
-                value=len(times) - 1,
-            )
-            t_sel = times[time_index]
-
-            col_left, col_right = st.columns([2, 1])
-
-            with col_left:
-                for pname, arr in results.items():
-                    st.subheader(f"{pname} profile at t = {t_sel:.1f} s")
-                    df_plot = pd.DataFrame(
-                        {
-                            "x (m)": grid.x,
-                            f"{pname} ({prop_cfg[pname].units})": arr[time_index, :],
-                        }
-                    )
-                    st.line_chart(df_plot.set_index("x (m)"))
-
-            with col_right:
-                st.subheader("Download results (CSV)")
-                for pname, arr in results.items():
-                    df = pd.DataFrame(arr, columns=grid.x)
-                    df.insert(0, "time (s)", times)
-                    csv = df.to_csv(index=False)
-                    st.download_button(
-                        label=f"Download {pname} as CSV",
-                        data=csv,
-                        file_name=f"{pname}_results.csv",
-                        mime="text/csv",
-                    )
+        st.error("Please activate at lea
