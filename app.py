@@ -465,7 +465,7 @@ with tab1:
             prop_name_1d,
             prop_cfg.units,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     elif plot_type == "Time series at fixed position":
         x_loc = st.slider(
@@ -483,7 +483,7 @@ with tab1:
             prop_name_1d,
             prop_cfg.units,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     else:  # Space–time map
         fig = make_space_time_figure(
@@ -493,7 +493,7 @@ with tab1:
             prop_name_1d,
             prop_cfg.units,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
 # ---------------------- Tab 2: Top-view map -----------------------------
 
@@ -530,7 +530,7 @@ with tab2:
             name=prop_name_map,
             units=prop_cfg_map.units,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     else:
         speed = st.slider(
             "Animation speed factor (1 = normal)",
@@ -550,7 +550,7 @@ with tab2:
             units=prop_cfg_map.units,
             frame_duration_ms=frame_duration_ms,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
 # ---------------------- Tab 3: Downloads --------------------------------
 
