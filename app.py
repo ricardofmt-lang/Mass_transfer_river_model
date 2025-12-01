@@ -6,9 +6,11 @@ import pandas as pd
 import streamlit as st
 
 from sim_engine import (
+    Atmosphere,
     BoundaryCondition,
     Discharge,
     Flow,
+    GasExchangeConfig,
     Grid,
     PropertyConfig,
     Simulation,
@@ -30,6 +32,10 @@ st.set_page_config(
     page_title="1D River Transport Model - Beta version",
     layout="wide",
 )
+
+HENRY_TEMPS = np.array([0.0, 5.0, 10.0, 15.0, 20.0, 25.0])
+HENRY_O2 = np.array([0.002181, 0.001913, 0.001696, 0.001524, 0.001384, 0.001263])
+HENRY_CO2 = np.array([0.076425, 0.063532, 0.053270, 0.045463, 0.039170, 0.033363])
 
 from dataclasses import dataclass
 
@@ -490,9 +496,123 @@ for name in property_names_base:
             "oxygen_per_bod": oxygen_per_bod,
         }
 
-# ------------------- 5. Generic property (E. coli) -------------------
 
-st.sidebar.header("5. Generic property (e.g. E. coli)")
+# ------------------- 5. Atmosphere ----------------------------------
+
+st.sidebar.header("5. Atmosphere (free-surface fluxes)")
+
+atm_use = st.sidebar.checkbox(
+    "Include atmosphere (heat + gas exchange at free surface)?",
+    value=True,
+)
+
+if atm_use:
+    air_T = st.sidebar.number_input(
+        "Air temperature (°C)",
+        min_value=-40.0,
+        max_value=60.0,
+        value=20.0,
+        step=0.5,
+    )
+    rel_h_pct = st.sidebar.slider(
+        "Relative humidity (%)",
+        min_value=0,
+        max_value=100,
+        value=70,
+        step=1,
+    )
+    rel_h = rel_h_pct / 100.0
+
+    cloud_cover = st.sidebar.slider(
+        "Cloud cover (0–1)",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.5,
+        step=0.05,
+    )
+
+    solar_const = st.sidebar.number_input(
+        "Solar constant at top of atmosphere (W/m²)",
+        min_value=200.0,
+        max_value=1500.0,
+        value=1360.0,
+        step=10.0,
+    )
+
+    latitude = st.sidebar.number_input(
+        "Latitude (deg)",
+        min_value=-90.0,
+        max_value=90.0,
+        value=38.0,
+        step=0.5,
+    )
+
+    h_min = st.sidebar.number_input(
+        "Minimum heat transfer coefficient h_min (W/m²/K)",
+        min_value=0.0,
+        max_value=100.0,
+        value=5.0,
+        step=0.5,
+    )
+
+    wind_speed = st.sidebar.number_input(
+        "Wind speed at surface (m/s)",
+        min_value=0.0,
+        max_value=50.0,
+        value=1.0,
+        step=0.1,
+    )
+
+    sunrise_hour = st.sidebar.number_input(
+        "Sunrise hour (0–24)",
+        min_value=0.0,
+        max_value=24.0,
+        value=6.0,
+        step=0.25,
+    )
+
+    sunset_hour = st.sidebar.number_input(
+        "Sunset hour (0–24)",
+        min_value=0.0,
+        max_value=24.0,
+        value=18.0,
+        step=0.25,
+    )
+
+    sky_mode = st.sidebar.selectbox(
+        "Sky temperature",
+        ["use correlation", "impose value"],
+        index=0,
+    )
+
+    sky_temperature = None
+    sky_temperature_imposed = False
+    if sky_mode == "impose value":
+        sky_temperature = st.sidebar.number_input(
+            "Sky temperature (°C)",
+            min_value=-80.0,
+            max_value=60.0,
+            value=10.0,
+            step=0.5,
+        )
+        sky_temperature_imposed = True
+else:
+    # sensible defaults if atmosphere is off
+    air_T = 20.0
+    rel_h = 0.7
+    cloud_cover = 0.5
+    solar_const = 1360.0
+    latitude = 38.0
+    h_min = 5.0
+    wind_speed = 1.0
+    sunrise_hour = 6.0
+    sunset_hour = 18.0
+    sky_temperature = None
+    sky_temperature_imposed = False
+
+# ------------------- 6. Generic property (E. coli) -------------------
+
+st.sidebar.header("6. Generic property (e.g. E. coli)")
 
 generic_active = st.sidebar.checkbox(
     "Include Generic property (E. coli)",
@@ -618,9 +738,9 @@ if generic_active:
             "rt_factor": gen_rt_factor,
         }
 
-# ------------------- 6. Point discharges -----------------------------
+# ------------------- 7. Point discharges -----------------------------
 
-st.sidebar.header("6. Point discharges (optional)")
+st.sidebar.header("7. Point discharges (optional)")
 
 n_discharges = st.sidebar.number_input(
     "Number of point discharges",
@@ -667,7 +787,7 @@ for i in range(n_discharges):
             {"x": x_d, "q": q_d, "concentrations": concs}
         )
 
-# ------------------- 7. Run button ----------------------------------
+# ------------------- 8. Run button ----------------------------------
 
 
 def build_and_run_simulation():
@@ -688,6 +808,23 @@ def build_and_run_simulation():
         diffusion_on=(diffusivity > 0.0),
     )
 
+    # Atmosphere object (for free-surface fluxes)
+    atmosphere: Optional[Atmosphere] = None
+    if atm_use:
+        atmosphere = Atmosphere(
+            temperature=air_T,
+            humidity=rel_h,
+            cloud_cover=cloud_cover,
+            solar_constant=solar_const,
+            latitude_deg=latitude,
+            h_min=h_min,
+            wind_speed=wind_speed,
+            sky_temperature=sky_temperature,
+            sky_temperature_imposed=sky_temperature_imposed,
+            sunrise_hour=sunrise_hour,
+            sunset_hour=sunset_hour,
+        )
+
     # Simulation config
     cfg = SimulationConfig(
         dt=dt_seconds,
@@ -697,7 +834,9 @@ def build_and_run_simulation():
         time_scheme=time_scheme,
         quick_up_enabled=quick_up_enabled,
         quick_up_ratio=quick_up_ratio,
+        atmosphere=atmosphere,
     )
+
 
     # Property configs
     properties: Dict[str, PropertyConfig] = {}
@@ -735,6 +874,35 @@ def build_and_run_simulation():
         )
         properties[name] = p
 
+        # Free-surface coupling with atmosphere
+        if name == "Temperature":
+            p.enable_free_surface_heat_flux = atm_use
+            # keep individual components on; can be refined later if needed
+            p.enable_sensible_heat_flux = True
+            p.enable_latent_heat_flux = True
+            p.enable_radiative_heat_flux = True
+
+        if name == "DO":
+            p.enable_gas_exchange = atm_use
+            if atm_use:
+                p.gas_exchange = GasExchangeConfig(
+                    henry_temps=HENRY_TEMPS.copy(),
+                    henry_constants=HENRY_O2.copy(),
+                    partial_pressure_atm=0.2095,       # ~21% O2
+                    molecular_mass_mg_per_mol=32_000.0,  # 32 g/mol
+                )
+
+        if name == "CO2":
+            p.enable_gas_exchange = atm_use
+            if atm_use:
+                p.gas_exchange = GasExchangeConfig(
+                    henry_temps=HENRY_TEMPS.copy(),
+                    henry_constants=HENRY_CO2.copy(),
+                    partial_pressure_atm=0.0004,       # ~400 ppm CO2
+                    molecular_mass_mg_per_mol=44_000.0,  # 44 g/mol
+                )
+
+        
         # initial profile with optional intervals
         initial_profiles[name] = build_initial_profile(
             x=grid.x,
