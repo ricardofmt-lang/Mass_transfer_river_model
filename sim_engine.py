@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional
 
+import math
 import numpy as np
 
 
@@ -58,6 +59,52 @@ class Flow:
 
 
 @dataclass
+class Atmosphere:
+    """
+    Atmosphere structure mirroring the VBA 'Type Atmosphere'.
+    Units follow the Excel model:
+      - temperature, sky_temperature in °C
+      - humidity in 0–1
+      - cloud_cover in 0–1
+      - solar_constant in W/m²
+      - latitude_deg in degrees
+      - h_min in W/m²/K
+      - wind_speed in m/s
+      - sunrise_hour, sunset_hour in hours (0–24)
+    """
+    temperature: float          # air temperature (°C)
+    humidity: float             # relative humidity (0–1)
+    cloud_cover: float          # 0–1
+    solar_constant: float       # W/m²
+    latitude_deg: float         # degrees
+    h_min: float                # W/m²/K
+    wind_speed: float           # m/s
+    sky_temperature: Optional[float] = None  # °C
+    sky_temperature_imposed: bool = False
+    sunrise_hour: float = 6.0
+    sunset_hour: float = 18.0
+
+
+@dataclass
+class GasExchangeConfig:
+    """
+    Configuration for free-surface gas exchange, equivalent
+    to VBA GasProperties + Henry table.
+    """
+    henry_temps: np.ndarray              # °C
+    henry_constants: np.ndarray          # Henry constants (mole/atm units as in Excel)
+    partial_pressure_atm: float          # gas partial pressure (atm)
+    molecular_mass_mg_per_mol: float     # mg/mol
+
+
+# Henry constants table from Table 1 (0–25 ºC, step 5 ºC)
+HENRY_TEMPS = np.array([0.0, 5.0, 10.0, 15.0, 20.0, 25.0])
+HENRY_O2 = np.array([0.002181, 0.001913, 0.001696, 0.001524, 0.001384, 0.001263])
+HENRY_CO2 = np.array([0.076425, 0.063532, 0.053270, 0.045463, 0.039170, 0.033363])
+
+
+
+@dataclass
 class BoundaryCondition:
     left_type: Literal["dirichlet", "neumann"] = "dirichlet"
     left_value: float = 0.0
@@ -85,6 +132,16 @@ class PropertyConfig:
 
     boundary: BoundaryCondition = field(default_factory=BoundaryCondition)
 
+    # --- Free-surface coupling with the atmosphere (VBA 'FreeSurface*' flags) ---
+    enable_free_surface_heat_flux: bool = False   # Temperature
+    enable_sensible_heat_flux: bool = True
+    enable_latent_heat_flux: bool = True
+    enable_radiative_heat_flux: bool = True
+
+    # --- Free-surface gas exchange (DO / CO2) ---
+    enable_gas_exchange: bool = False
+    gas_exchange: Optional[GasExchangeConfig] = None
+
 
 @dataclass
 class Discharge:
@@ -104,6 +161,10 @@ class SimulationConfig:
     # QUICK_UP options (used in the UI / diagnostics)
     quick_up_enabled: bool = False
     quick_up_ratio: float = 3.0
+
+    # Atmosphere (for heat & gas exchange at free surface)
+    atmosphere: Optional[Atmosphere] = None
+
 
 
 @dataclass
@@ -139,23 +200,38 @@ class Simulation:
         # sort discharges by position
         self.discharges.sort(key=lambda d: d.x)
 
+        # atmosphere and time tracking for surface fluxes
+        self.atmosphere: Optional[Atmosphere] = self.cfg.atmosphere
+        self.current_time: float = 0.0  # seconds
+
+
     # ------------------------- PUBLIC API -----------------------------
 
     def run(
         self,
         initial_profiles: Dict[str, np.ndarray],
     ) -> Dict[str, np.ndarray]:
-        """
-        Run simulation and return:
-            results[name] shape (nt, nc), with nt output times.
-        """
-        dt = self.cfg.dt
-        t_end = self.cfg.duration
-        dt_out = self.cfg.output_interval
+        ...
+        t = 0.0
+        next_out = 0.0
+        step_index = 0
+        ...
+        while t < t_end - 1e-12:
+            dt_step = min(dt, t_end - t)
+            t_new = t + dt_step
+            step_index += 1
 
-        # build output time grid
-        nt = int(np.floor(t_end / dt_out)) + 1
-        times = np.linspace(0.0, t_end, nt)
+            # update internal clock for atmosphere fluxes
+            self.current_time = t
+
+            # advance one step
+            C = self._advance_one_step(C, dt_step)
+            ...
+            t = t_new
+
+        self.times = times
+        return outputs
+
 
         # internal state at full time resolution
         t = 0.0
@@ -290,6 +366,10 @@ class Simulation:
 
             C_new[name] = C
 
+            # --- Free-surface fluxes (Temperature, DO, CO2) ---
+            if self.atmosphere is not None:
+                C_new = self._apply_atmosphere_fluxes(C_new, dt)
+
         return C_new
 
     # -------------------------- REACTIONS -----------------------------
@@ -349,6 +429,240 @@ class Simulation:
         # Left as a hook if further detail is required later.
         return
 
+    # -------------------- ATMOSPHERE / FREE-SURFACE -------------------
+
+    def _apply_atmosphere_fluxes(
+        self,
+        C: Dict[str, np.ndarray],
+        dt: float,
+    ) -> Dict[str, np.ndarray]:
+        """
+        Apply free-surface heat and gas fluxes after advection-diffusion,
+        closely following VBA ExpFreeSurfaceHeatFluxes and
+        ExpFreeSurfaceGasFluxes.
+        """
+        atm = self.atmosphere
+        if atm is None:
+            return C
+
+        # Temperature (heat budget)
+        temp = C.get("Temperature", None)
+        temp_cfg = self.properties.get("Temperature", None)
+        if temp is not None and temp_cfg is not None and temp_cfg.enable_free_surface_heat_flux:
+            C["Temperature"] = self._apply_temperature_surface_fluxes(
+                temp, temp_cfg, dt, atm
+            )
+            temp = C["Temperature"]  # updated
+
+        # Gas exchange for DO and CO2 (requires temperature)
+        if temp is None:
+            return C
+
+        for gas_name in ("DO", "CO2"):
+            gas_arr = C.get(gas_name, None)
+            gas_cfg = self.properties.get(gas_name, None)
+            if (
+                gas_arr is not None
+                and gas_cfg is not None
+                and gas_cfg.enable_gas_exchange
+                and gas_cfg.gas_exchange is not None
+            ):
+                C[gas_name] = self._apply_gas_surface_fluxes(
+                    temp=temp,
+                    gas=gas_arr,
+                    cfg=gas_cfg,
+                    dt=dt,
+                    atm=atm,
+                )
+
+        return C
+
+    def _apply_temperature_surface_fluxes(
+        self,
+        temp: np.ndarray,
+        cfg: PropertyConfig,
+        dt: float,
+        atm: Atmosphere,
+    ) -> np.ndarray:
+        """
+        Explicit free-surface heat fluxes:
+          - Solar radiation (always applied when atmosphere is on)
+          - Sensible heat
+          - Latent heat
+          - Longwave radiation
+        Based on VBA ExpFreeSurfaceHeatFluxes.
+        """
+        rho = 1000.0  # kg/m³
+        cp = 4180.0   # J/(kg·K)
+        depth = self.grid.depth
+        nc = self.grid.nc
+
+        temp_new = temp.copy()
+
+        # Time in days for Solar_Radiation
+        time_days = (self.current_time + 0.5 * dt) / 86400.0
+
+        # --- Solar radiation (same for all cells) ---
+        q_solar = self._solar_radiation(atm, time_days)  # W/m²
+        if q_solar != 0.0:
+            dT_solar = dt * q_solar / (rho * cp * depth)
+            temp_new += dT_solar
+
+        # Convective heat-transfer coefficient h(w, h_min)
+        h_conv = self._convective_h(atm.wind_speed, atm.h_min)
+
+        # --- Sensible heat flux ---
+        if cfg.enable_sensible_heat_flux:
+            cB = 0.62  # as in VBA
+            for i in range(nc):
+                flux_conv = cB * h_conv * (atm.temperature - temp_new[i])
+                temp_new[i] += dt * flux_conv / (rho * cp * depth)
+
+        # --- Latent heat flux ---
+        if cfg.enable_latent_heat_flux:
+            es_air = self._es(atm.temperature)
+            for i in range(nc):
+                es_water = self._es(temp_new[i])
+                flux_latent = -h_conv * (es_water - atm.humidity * es_air)
+                if flux_latent > 0.0:
+                    flux_latent = 0.0  # evaporation only
+                temp_new[i] += dt * flux_latent / (rho * cp * depth)
+
+        # --- Longwave radiative exchange ---
+        if cfg.enable_radiative_heat_flux:
+            for i in range(nc):
+                flux_rad = self._flux_radiative(temp_new[i], atm)
+                temp_new[i] += dt * flux_rad / (rho * cp * depth)
+
+        return temp_new
+
+    def _apply_gas_surface_fluxes(
+        self,
+        temp: np.ndarray,
+        gas: np.ndarray,
+        cfg: PropertyConfig,
+        dt: float,
+        atm: Atmosphere,
+    ) -> np.ndarray:
+        """
+        Free-surface gas exchange for DO / CO2 using Henry law and the
+        VBA K_Gas_exchange correlation as in ExpFreeSurfaceGasFluxes.
+        """
+        ge = cfg.gas_exchange
+        if ge is None:
+            return gas
+
+        depth = self.grid.depth
+        slope = max(self.flow.slope, 0.0)
+        gas_new = gas.copy()
+        nc = self.grid.nc
+
+        for i in range(nc):
+            Tw = float(temp[i])
+            csat = self._get_csat_henry(cfg, Tw)  # mg/L
+
+            # K_Gas_exchange (1/s) – VBA correlation (surface renewal / reaeration)
+            k_ex = (1.0 / depth) * 0.142 * (abs(atm.wind_speed) + 0.1) * (slope + 1.0e-5)
+
+            # Enhancement when concentration is above equilibrium (VBA behavior)
+            if csat < gas_new[i]:
+                denom = max(csat + gas_new[i], 1.0e-12)
+                frac = (gas_new[i] - csat) / denom
+                k_ex *= (1.0 + 20.0 * frac)
+
+            # Explicit-implicit update (identical algebra to VBA)
+            gas_new[i] = (gas_new[i] + dt * k_ex * csat) / (1.0 + dt * k_ex)
+
+        return gas_new
+
+    # ------------------------ ATMOSPHERE HELPERS ----------------------
+
+    def _solar_radiation(self, atm: Atmosphere, time_days: float) -> float:
+        """
+        Approximate VBA Solar_Radiation:
+        - daily sinusoid between sunrise and sunset
+        - atmospheric attenuation via (1 - 0.75 * C^3)
+        """
+        hour = (time_days - math.floor(time_days)) * 24.0
+        if hour < atm.sunrise_hour or hour > atm.sunset_hour:
+            return 0.0
+
+        # simple sine over daylight
+        rel = math.sin(
+            math.pi * (hour - atm.sunrise_hour) / (atm.sunset_hour - atm.sunrise_hour)
+        )
+        if rel <= 0.0:
+            return 0.0
+
+        cloud_factor = 1.0 - 0.75 * (atm.cloud_cover ** 3)
+        return atm.solar_constant * rel * cloud_factor
+
+    @staticmethod
+    def _convective_h(wind_speed: float, h_min: float) -> float:
+        """VBA h(w) = h_min + 0.345 * w²"""
+        w = max(wind_speed, 0.0)
+        return h_min + 0.345 * (w ** 2)
+
+    @staticmethod
+    def _es(T: float) -> float:
+        """
+        Saturation vapour pressure Es(T) [mb] using a Magnus-type
+        relation, consistent with VBA Es().
+        """
+        A = 6.112
+        B = 17.62
+        C = 243.12
+        return A * math.exp(B * T / (C + T))
+
+    @staticmethod
+    def _flux_radiative(Tw: float, atm: Atmosphere) -> float:
+        """
+        Longwave radiation flux [W/m²] from water surface, following
+        VBA FluxRadiative logic: Stefan–Boltzmann with empirical sky T.
+        Positive flux warms the water.
+        """
+        sigma = 5.67e-8
+        eps = 0.97
+        tsurf = Tw + 273.15
+
+        if atm.sky_temperature_imposed and atm.sky_temperature is not None:
+            tsky = atm.sky_temperature + 273.15
+        else:
+            tair = atm.temperature + 273.15
+            # empirical sky temperature correlation (VBA-style)
+            tsky = (
+                9.37e-6 * (tair ** 6) * (1.0 + 0.17 * (atm.cloud_cover ** 2))
+            ) ** 0.25
+
+        return eps * sigma * (tsky ** 4 - tsurf ** 4)
+
+    def _get_csat_henry(self, cfg: PropertyConfig, Tw: float) -> float:
+        """
+        Henry-law saturation concentration [mg/L] for a given property,
+        equivalent to VBA getCsat_Henry.
+        """
+        ge = cfg.gas_exchange
+        if ge is None:
+            return 0.0
+
+        Tvec = ge.henry_temps
+        Hvec = ge.henry_constants
+
+        if Tw <= Tvec[0]:
+            H = Hvec[0]
+        elif Tw >= Tvec[-1]:
+            H = Hvec[-1]
+        else:
+            j = int(np.searchsorted(Tvec, Tw))
+            T_low, T_high = Tvec[j - 1], Tvec[j]
+            H_low, H_high = Hvec[j - 1], Hvec[j]
+            H = H_low + (H_high - H_low) * (Tw - T_low) / (T_high - T_low)
+
+        # VBA: Csat = H(T) * PartialPressure * MolecularMass
+        return H * ge.partial_pressure_atm * ge.molecular_mass_mg_per_mol
+
+
+    
     # -------------------------- DISCHARGES ----------------------------
 
     def _compute_discharge_indices(self) -> List[int]:
