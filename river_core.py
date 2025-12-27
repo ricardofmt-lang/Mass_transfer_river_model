@@ -91,15 +91,21 @@ class RiverModel:
     
     def parse_vertical_params(self, df, key_col_idx, val_col_idx):
         params = {}
+        # Handle potential NaNs in the key column by converting to string
         keys = df.iloc[:, key_col_idx].astype(str).str.strip()
         vals = df.iloc[:, val_col_idx]
         for i, key in enumerate(keys):
-            if key in ["nan", "None", ""]: continue
+            if key in ["nan", "None", "", "NaN"]: continue
             clean_key = key.replace(":", "")
             try:
-                params[clean_key] = float(vals.iloc[i])
+                # Try to convert to float if possible
+                val = vals.iloc[i]
+                try:
+                    params[clean_key] = float(val)
+                except:
+                    params[clean_key] = val
             except:
-                params[clean_key] = vals.iloc[i]
+                continue
         return params
 
     def load_main_config(self, df):
@@ -144,6 +150,8 @@ class RiverModel:
         self.atmos.cloud_cover = float(p.get("CloudCover", 0))
         
         sky_t = p.get("SkyTemperature", -40)
+        # Check for various forms of None/NaN
+        if isinstance(sky_t, str) and sky_t.lower() == 'nan': sky_t = -40
         self.atmos.sky_temp_imposed = (sky_t != -40 and not pd.isna(sky_t))
         self.atmos.sky_temp = float(sky_t) if self.atmos.sky_temp_imposed else -40.0
             
@@ -154,12 +162,14 @@ class RiverModel:
 
         # Henry's Table
         start_row = -1
+        # df column 0 might be strings or mixed
         for i, val in enumerate(df.iloc[:,0].astype(str)):
             if "HenryConstants" in val:
                 start_row = i + 2
                 break
         if start_row > 0:
             try:
+                # Limit to 3 columns for the table
                 table = df.iloc[start_row:, 0:3].dropna().astype(float).values
                 self.atmos.henry_table_temps = table[:, 0]
                 self.atmos.henry_table_o2 = table[:, 1]
@@ -182,18 +192,27 @@ class RiverModel:
         generics = get_row_values("DischargeGeneric")
 
         if locs is not None:
+            # Filter out NaNs from the row values
+            locs = [x for x in locs if pd.notna(x)]
             for i in range(len(locs)):
                 try:
-                    cell_idx = int(locs[i]) - 1
+                    cell_idx = int(float(locs[i])) - 1
                     if cell_idx < 0: continue
+                    
+                    # Safe helper to get value at index i
+                    def get_val(arr, idx):
+                        if arr is None or idx >= len(arr) or pd.isna(arr[idx]): return 0.0
+                        try: return float(arr[idx])
+                        except: return 0.0
+
                     d = {
                         "cell": cell_idx,
-                        "flow": float(flows[i]) if flows is not None else 0.0,
-                        "temp": float(temps[i]) if temps is not None else 0.0,
-                        "bod": float(bods[i]) if bods is not None else 0.0,
-                        "do": float(dos[i]) if dos is not None else 0.0,
-                        "co2": float(co2s[i]) if co2s is not None else 0.0,
-                        "generic": float(generics[i]) if generics is not None else 0.0
+                        "flow": get_val(flows, i),
+                        "temp": get_val(temps, i),
+                        "bod": get_val(bods, i),
+                        "do": get_val(dos, i),
+                        "co2": get_val(co2s, i),
+                        "generic": get_val(generics, i)
                     }
                     self.discharges.append(d)
                 except: continue
@@ -223,7 +242,7 @@ class RiverModel:
             if cell_start > 0:
                 for i in range(cell_start, len(df)):
                     try:
-                        c_idx = int(df.iloc[i, 0]) - 1
+                        c_idx = int(float(df.iloc[i, 0])) - 1
                         c_val = float(df.iloc[i, 1])
                         if 0 <= c_idx < self.grid.nc:
                             c.values[c_idx] = c_val
@@ -241,7 +260,11 @@ class RiverModel:
             if interval_start > 0:
                 for i in range(interval_start, len(df)):
                     try:
-                        row = df.iloc[i, :].astype(str).values
+                        row = df.iloc[i, :].values
+                        # remove nans
+                        row = [x for x in row if pd.notna(x)]
+                        if len(row) < 3: continue
+                        
                         x1, x2, val = float(row[0]), float(row[1]), float(row[2])
                         mask = (self.grid.xc >= x1) & (self.grid.xc <= x2)
                         c.values[mask] = val
@@ -421,6 +444,7 @@ class RiverModel:
         """Generator for step-by-step execution (UI friendly)"""
         total_steps = int((self.config.duration_days * 86400) / self.config.dt)
         print_interval = int(self.config.dt_print / self.config.dt)
+        if print_interval < 1: print_interval = 1
         
         # Init Results keys
         self.results["times"] = []
