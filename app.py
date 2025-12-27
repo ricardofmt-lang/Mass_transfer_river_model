@@ -6,14 +6,13 @@ from river_model import RiverModel
 
 st.set_page_config(page_title="River Transport Digital Twin", layout="wide")
 
-st.title("Channel Transport Model (VBA Exact Replica)")
+st.title("Channel Transport Model (Complete Replica)")
 
 # --- Sidebar (Simulation Control) ---
-st.sidebar.header("Controls (Main Sheet)")
+st.sidebar.header("Controls")
 sim_days = st.sidebar.number_input("Simulation Duration (Days)", value=1.0)
 time_step = st.sidebar.number_input("Time Step (Seconds)", value=200.0)
 
-# Advection/Diffusion Toggles
 st.sidebar.subheader("Transport Options")
 adv_active = st.sidebar.checkbox("Advection", value=True)
 diff_active = st.sidebar.checkbox("Diffusion", value=True)
@@ -27,16 +26,14 @@ if adv_active:
     if adv_type == "QUICK":
         quick_up = st.sidebar.checkbox("Use QUICK UP (Steep Gradient)", value=True)
         if quick_up:
-            quick_ratio = st.sidebar.number_input("QUICK UP Ratio", value=2.0, min_value=2.0, max_value=10.0)
+            quick_ratio = st.sidebar.number_input("QUICK UP Ratio", value=2.0)
 
-time_disc = st.sidebar.selectbox("Time Discretization", ["exp", "imp", "semi"], index=1) # Implicit default as per VBA
+time_disc = st.sidebar.selectbox("Time Discretization", ["exp", "imp", "semi"], index=1)
 
-# --- Tabs for Sheets ---
 tab_river, tab_atmo, tab_dis, tab_props, tab_run = st.tabs(["River/Flow", "Atmosphere", "Discharges", "Properties", "Run & Results"])
 
-# 1. River Sheet Inputs
+# 1. River
 with tab_river:
-    st.subheader("Grid & Flow Parameters")
     col1, col2 = st.columns(2)
     with col1:
         length = st.number_input("Channel Length (m)", value=12000.0)
@@ -46,14 +43,13 @@ with tab_river:
     with col2:
         velocity = st.number_input("Flow Velocity (m/s)", value=0.1)
         slope_pct = st.number_input("River Slope (%)", value=0.01)
-        diffusivity = st.number_input("Diffusivity (m2/s) (0 for auto)", value=0.0)
+        diffusivity = st.number_input("Diffusivity (m2/s) (0=Auto)", value=0.0)
         if diffusivity == 0:
             diffusivity = 0.1 * abs(velocity) * width
-            st.caption(f"Calculated Diffusivity: {diffusivity}")
+            st.caption(f"Calculated: {diffusivity}")
 
-# 2. Atmosphere Sheet Inputs
+# 2. Atmosphere
 with tab_atmo:
-    st.subheader("Atmospheric Conditions")
     col1, col2, col3 = st.columns(3)
     with col1:
         air_temp = st.number_input("Air Temp (°C)", value=20.0)
@@ -66,17 +62,10 @@ with tab_atmo:
     with col3:
         tsr = st.number_input("Sunrise Hour", value=6.0)
         tss = st.number_input("Sunset Hour", value=20.0)
-        
-    st.subheader("Henry's Constants (Gas Exchange)")
-    st.info("Using standard temperature-dependent Henry constants for O2 and CO2 as defined in the source PDF/VBA default structure.")
 
 # 3. Discharges
 with tab_dis:
-    st.subheader("Point Source Discharges")
-    # Helper to create discharge list
-    if 'discharges' not in st.session_state:
-        st.session_state.discharges = []
-    
+    if 'discharges' not in st.session_state: st.session_state.discharges = []
     with st.expander("Add Discharge"):
         d_name = st.text_input("Name", "D1")
         d_loc = st.number_input("Location (m)", 0.0)
@@ -84,97 +73,120 @@ with tab_dis:
         d_val_temp = st.number_input("Temp (°C)", 20.0)
         d_val_bod = st.number_input("BOD (mg/L)", 50.0)
         d_val_do = st.number_input("DO (mg/L)", 0.0)
-        if st.button("Add"):
+        if st.button("Add Discharge"):
             cell_idx = int(d_loc / (length/n_cells))
             st.session_state.discharges.append({
                 "name": d_name, "cell": cell_idx, "vol": d_flow,
                 "vals": {"Temperature": d_val_temp, "BOD": d_val_bod, "DO": d_val_do}
             })
-    
     st.dataframe(pd.DataFrame(st.session_state.discharges))
+
+# Helper for Initial Conditions GUI
+def render_init_ui(key_prefix):
+    itype = st.selectbox("Initialization Method", ["DEFAULT", "CELL", "INTERVAL_M"], key=f"{key_prefix}_type")
+    
+    init_data = {"type": itype, "intervals": []}
+    
+    # Default Value always required as fallback
+    def_val = st.number_input("Default Value", value=0.0, key=f"{key_prefix}_def")
+    init_data["default_val"] = def_val
+    
+    if itype == "CELL":
+        st.caption("Add points (Cell Index, Value)")
+        c_idx = st.number_input("Cell Index", 0, int(n_cells)-1, key=f"{key_prefix}_cidx")
+        c_val = st.number_input("Value", key=f"{key_prefix}_cval")
+        if st.button("Add Point", key=f"{key_prefix}_btn"):
+            if f"{key_prefix}_pts" not in st.session_state: st.session_state[f"{key_prefix}_pts"] = []
+            st.session_state[f"{key_prefix}_pts"].append((c_idx, c_idx, c_val))
+    
+    elif itype == "INTERVAL_M":
+        st.caption("Add Interval (Start m, End m, Value)")
+        m_start = st.number_input("Start (m)", 0.0, length, key=f"{key_prefix}_mstart")
+        m_end = st.number_input("End (m)", 0.0, length, key=f"{key_prefix}_mend")
+        m_val = st.number_input("Value", key=f"{key_prefix}_mval")
+        if st.button("Add Interval", key=f"{key_prefix}_btn_m"):
+            if f"{key_prefix}_pts" not in st.session_state: st.session_state[f"{key_prefix}_pts"] = []
+            st.session_state[f"{key_prefix}_pts"].append((m_start, m_end, m_val))
+            
+    # Show active intervals
+    if f"{key_prefix}_pts" in st.session_state:
+        st.write("Configured Intervals:", st.session_state[f"{key_prefix}_pts"])
+        init_data["intervals"] = st.session_state[f"{key_prefix}_pts"]
+        
+    return init_data
 
 # 4. Properties
 with tab_props:
-    st.subheader("Property Configuration")
-    
     # Temperature
     with st.expander("Temperature", expanded=True):
-        temp_active = st.checkbox("Active", value=True, key="t_act")
-        temp_init = st.number_input("Initial Value", value=15.0, key="t_init")
-        temp_left = st.number_input("Left Boundary", value=15.0, key="t_left")
-        temp_fs_flux = st.checkbox("Free Surface Flux", value=True, key="t_fs")
+        t_act = st.checkbox("Active", value=True, key="t_act")
+        st.subheader("Initial Conditions")
+        t_init_cfg = render_init_ui("temp")
+        st.subheader("Boundary Conditions")
+        t_left = st.number_input("Left Value", value=15.0, key="t_l")
+        t_right = st.number_input("Right Value", value=15.0, key="t_r")
+        t_cyclic = st.checkbox("Cyclic Boundary", key="t_cyc")
+        st.subheader("Fluxes")
+        t_fs = st.checkbox("Free Surface Flux", value=True, key="t_fs")
     
     # BOD
     with st.expander("BOD"):
-        bod_active = st.checkbox("Active", value=True, key="b_act")
-        bod_init = st.number_input("Initial Value", value=5.0, key="b_init")
-        bod_decay = st.number_input("Decay Rate (1/day)", value=0.23, key="b_dec")
-        bod_left = st.number_input("Left Boundary", value=2.0, key="b_left")
-    
+        b_act = st.checkbox("Active", value=True, key="b_act")
+        st.subheader("Initial Conditions")
+        b_init_cfg = render_init_ui("bod")
+        st.subheader("Params")
+        b_dec = st.number_input("Decay Rate (1/day)", value=0.23)
+        b_ana = st.checkbox("Anaerobic Respiration", value=True)
+        st.subheader("Boundary")
+        b_left = st.number_input("Left Value", value=2.0, key="b_l")
+        
     # DO
     with st.expander("DO"):
-        do_active = st.checkbox("Active", value=True, key="d_act")
-        do_init = st.number_input("Initial Value", value=9.0, key="d_init")
-        do_left = st.number_input("Left Boundary", value=9.0, key="d_left")
-        do_fs_flux = st.checkbox("Reaeration (Free Surface)", value=True, key="d_fs")
+        d_act = st.checkbox("Active", value=True, key="d_act")
+        st.subheader("Initial Conditions")
+        d_init_cfg = render_init_ui("do")
+        st.subheader("Boundary")
+        d_left = st.number_input("Left Value", value=9.0, key="d_l")
+        d_fs = st.checkbox("Reaeration", value=True, key="d_fs")
 
 # Run
 with tab_run:
     if st.button("RUN SIMULATION", type="primary"):
-        # Assemble Configuration Dictionary
-        
-        # Discharges Parsing
-        def get_discharges_for(prop_name):
-            d_list = []
-            for d in st.session_state.discharges:
-                val = d['vals'].get(prop_name, 0.0)
-                d_list.append({"name": d['name'], "cell": d['cell'], "volume_rate": d['vol'], "specific_value": val})
-            return d_list
+        def get_d(pname):
+            return [{"name":d['name'], "cell":d['cell'], "volume_rate":d['vol'], "specific_value":d['vals'].get(pname,0)} for d in st.session_state.discharges]
 
         prop_params = {}
-        
-        if temp_active:
+        if t_act:
             prop_params["Temperature"] = {
-                "base": {"active": True},
-                "init_val": temp_init,
+                "base": {"active":True},
+                "init_config": t_init_cfg,
                 "boundary": {
-                    "left_value": temp_left, 
-                    "free_surface_flux": True,
-                    "fs_sensible_heat": temp_fs_flux, 
-                    "fs_latent_heat": temp_fs_flux, 
-                    "fs_radiative_heat": temp_fs_flux
+                    "left_value": t_left, "right_value": t_right, "cyclic": t_cyclic,
+                    "free_surface_flux": True, "fs_sensible_heat": t_fs, "fs_latent_heat": t_fs, "fs_radiative_heat": t_fs
                 },
-                "discharges": get_discharges_for("Temperature")
+                "discharges": get_d("Temperature")
             }
-            
-        if bod_active:
+        
+        if b_act:
             prop_params["BOD"] = {
-                "base": {
-                    "active": True,
-                    "decay_rate": bod_decay/86400.0,
-                    "max_val_logistic": 1e6,
-                    "grazing_ksat": 0.0,
-                    "anaerobic_respiration": True
-                },
-                "init_val": bod_init,
-                "boundary": {"left_value": bod_left},
-                "discharges": get_discharges_for("BOD")
+                "base": {"active":True, "decay_rate": b_dec/86400, "max_val_logistic":1e6, "anaerobic_respiration":b_ana},
+                "init_config": b_init_cfg,
+                "boundary": {"left_value": b_left},
+                "discharges": get_d("BOD")
             }
             
-        if do_active:
+        if d_act:
             prop_params["DO"] = {
-                "base": {"active": True},
-                "init_val": do_init,
+                "base": {"active":True},
+                "init_config": d_init_cfg,
                 "boundary": {
-                    "left_value": do_left,
-                    "free_surface_flux": do_fs_flux,
+                    "left_value": d_left, "free_surface_flux": d_fs,
                     "gas_exchange_params": {
-                        "label": "O2", "partial_pressure": 0.2095, "molecular_weight": 32000,
-                        "henry_constants_temp": [0, 10, 20, 30],
-                        "henry_constants_k": [0.000067, 0.000054, 0.000044, 0.000037]
+                        "label":"O2", "partial_pressure":0.2095, "molecular_weight":32000,
+                        "henry_temps": [0,10,20,30,40], "henry_ks": [0.000067, 0.000054, 0.000044, 0.000037, 0.000030]
                     }
                 },
-                "discharges": get_discharges_for("DO")
+                "discharges": get_d("DO")
             }
 
         grid_p = {"length": length, "river_width": width, "water_depth": depth, "nc": int(n_cells)}
@@ -190,41 +202,20 @@ with tab_run:
             "quick_up": quick_up, "quick_up_ratio": quick_ratio, "time_disc": time_disc
         }
         
-        # Init Model
         model = RiverModel()
         model.initialize(grid_p, flow_p, atm_p, ctrl_p, prop_params)
         
-        # Run
-        with st.spinner("Calculating Transport..."):
-            prog_bar = st.progress(0)
-            results = model.run(progress_callback=lambda x: prog_bar.progress(x))
+        with st.spinner("Calculating..."):
+            prog = st.progress(0)
+            res = model.run(lambda x: prog.progress(x))
             
-        st.success("Simulation Completed")
+        st.success("Done!")
         
-        # Visualization
-        x_axis = np.linspace(0, length, int(n_cells))
-        
-        st.subheader("Spatial Profiles (Final Step)")
+        # Plot
+        x_ax = np.linspace(0, length, int(n_cells))
         fig, ax = plt.subplots()
-        if "Temperature" in results:
-            ax.plot(x_axis, results["Temperature"][-1], label="Temp (°C)", color="red")
-        if "DO" in results:
-            ax.plot(x_axis, results["DO"][-1], label="DO (mg/L)", color="blue")
-        if "BOD" in results:
-            ax.plot(x_axis, results["BOD"][-1], label="BOD (mg/L)", color="brown")
-        
-        ax.set_xlabel("Distance (m)")
-        ax.legend()
-        ax.grid(True)
+        if "Temperature" in res: ax.plot(x_ax, res["Temperature"][-1], label="Temp", color="red")
+        if "DO" in res: ax.plot(x_ax, res["DO"][-1], label="DO", color="blue")
+        if "BOD" in res: ax.plot(x_ax, res["BOD"][-1], label="BOD", color="brown")
+        ax.legend(); ax.grid(True)
         st.pyplot(fig)
-        
-        st.subheader("Heatmaps (Space-Time)")
-        if "Temperature" in results:
-            st.write("Temperature Evolution")
-            data = np.array(results["Temperature"])
-            fig2, ax2 = plt.subplots()
-            c = ax2.imshow(data, aspect='auto', cmap='inferno', extent=[0, length, sim_days, 0])
-            plt.colorbar(c, ax=ax2, label="Temp (°C)")
-            ax2.set_xlabel("Distance (m)")
-            ax2.set_ylabel("Time (Days)")
-            st.pyplot(fig2)
