@@ -19,14 +19,18 @@ st.sidebar.header("Configuration")
 def load_config_file(label, key_name):
     """
     Loads CSV data from user upload or default string.
-    Crucially, uses `names=list(range(50))` to handle ragged CSV lines
-    (rows with variable number of columns) without raising ParserError.
+    Using `names=list(range(50))` forces pandas to read up to 50 columns
+    without checking for row length consistency, solving ParserErrors.
     """
     uploaded = st.sidebar.file_uploader(label, type=["csv"], key=key_name)
-    if uploaded:
-        return pd.read_csv(uploaded, header=None, names=list(range(50)))
-    else:
-        return pd.read_csv(StringIO(DEFAULT_CSVS[key_name]), header=None, names=list(range(50)))
+    try:
+        if uploaded:
+            return pd.read_csv(uploaded, header=None, engine='python', names=list(range(50)))
+        else:
+            return pd.read_csv(StringIO(DEFAULT_CSVS[key_name]), header=None, engine='python', names=list(range(50)))
+    except Exception as e:
+        st.error(f"Error loading {label}: {e}")
+        return pd.DataFrame()
 
 df_main = load_config_file("Main Config", "Main")
 df_river = load_config_file("River Geometry", "River")
@@ -44,10 +48,8 @@ df_co2 = load_config_file("CO2", "CO2")
 # =============================================================================
 
 if st.button("Run Simulation", type="primary"):
-    # 1. Instantiate
     model = RiverModel()
     
-    # 2. Load Data
     with st.spinner("Initializing Model..."):
         try:
             model.load_main_config(df_main)
@@ -62,11 +64,9 @@ if st.button("Run Simulation", type="primary"):
             st.error(f"Error reading configuration: {e}")
             st.stop()
 
-    # 3. Run
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    # Execute using the generator
     try:
         runner = model.run_simulation()
         for progress in runner:
@@ -75,7 +75,6 @@ if st.button("Run Simulation", type="primary"):
         progress_bar.progress(1.0)
         status_text.success("Simulation Complete!")
         
-        # 4. Save Results
         st.session_state['results'] = model.results
         st.session_state['grid'] = model.grid.xc
         
@@ -102,7 +101,6 @@ if 'results' in st.session_state:
             
             fig, ax = plt.subplots(figsize=(10, 5))
             
-            # Plot whatever is available in results
             for name in ["Temperature", "DO", "BOD", "CO2"]:
                 if name in res and len(res[name]) > time_idx:
                     ax.plot(xc, res[name][time_idx], label=name)
