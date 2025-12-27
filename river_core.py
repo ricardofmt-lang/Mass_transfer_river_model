@@ -82,7 +82,6 @@ class RiverModel:
         self.constituents: Dict[str, Constituent] = {}
         self.discharges = []
         self.current_time = 0.0
-        # Results storage: Dictionary where keys are constituent names, values are lists of arrays
         self.results = {"times": []}
 
     # -------------------------------------------------------------------------
@@ -91,14 +90,12 @@ class RiverModel:
     
     def parse_vertical_params(self, df, key_col_idx, val_col_idx):
         params = {}
-        # Handle potential NaNs in the key column by converting to string
         keys = df.iloc[:, key_col_idx].astype(str).str.strip()
         vals = df.iloc[:, val_col_idx]
         for i, key in enumerate(keys):
             if key in ["nan", "None", "", "NaN"]: continue
             clean_key = key.replace(":", "")
             try:
-                # Try to convert to float if possible
                 val = vals.iloc[i]
                 try:
                     params[clean_key] = float(val)
@@ -130,7 +127,6 @@ class RiverModel:
         self.grid.river_slope = float(p.get("RiverSlope", 0.0001))
         self.grid.manning_coef = float(p.get("ManningCoef(n)", 0.025))
         
-        # Geometry & Flow
         self.grid.area_vertical = self.grid.river_width * self.grid.water_depth
         wet_perimeter = self.grid.river_width + 2 * self.grid.water_depth
         rh = self.grid.area_vertical / wet_perimeter
@@ -150,7 +146,6 @@ class RiverModel:
         self.atmos.cloud_cover = float(p.get("CloudCover", 0))
         
         sky_t = p.get("SkyTemperature", -40)
-        # Check for various forms of None/NaN
         if isinstance(sky_t, str) and sky_t.lower() == 'nan': sky_t = -40
         self.atmos.sky_temp_imposed = (sky_t != -40 and not pd.isna(sky_t))
         self.atmos.sky_temp = float(sky_t) if self.atmos.sky_temp_imposed else -40.0
@@ -160,16 +155,13 @@ class RiverModel:
         self.atmos.p_o2 = float(p.get("O2PartialPressure", 0.2095))
         self.atmos.p_co2 = float(p.get("CO2PartialPressure", 0.000395))
 
-        # Henry's Table
         start_row = -1
-        # df column 0 might be strings or mixed
         for i, val in enumerate(df.iloc[:,0].astype(str)):
             if "HenryConstants" in val:
                 start_row = i + 2
                 break
         if start_row > 0:
             try:
-                # Limit to 3 columns for the table
                 table = df.iloc[start_row:, 0:3].dropna().astype(float).values
                 self.atmos.henry_table_temps = table[:, 0]
                 self.atmos.henry_table_o2 = table[:, 1]
@@ -192,14 +184,22 @@ class RiverModel:
         generics = get_row_values("DischargeGeneric")
 
         if locs is not None:
-            # Filter out NaNs from the row values
-            locs = [x for x in locs if pd.notna(x)]
-            for i in range(len(locs)):
+            # Filter NaNs for robust parsing
+            locs_clean = []
+            indices = []
+            for i, x in enumerate(locs):
+                if pd.notna(x):
+                    try:
+                        locs_clean.append(int(float(x)))
+                        indices.append(i)
+                    except: pass
+            
+            for k, cell_raw in enumerate(locs_clean):
                 try:
-                    cell_idx = int(float(locs[i])) - 1
+                    cell_idx = cell_raw - 1
                     if cell_idx < 0: continue
                     
-                    # Safe helper to get value at index i
+                    orig_idx = indices[k]
                     def get_val(arr, idx):
                         if arr is None or idx >= len(arr) or pd.isna(arr[idx]): return 0.0
                         try: return float(arr[idx])
@@ -207,12 +207,12 @@ class RiverModel:
 
                     d = {
                         "cell": cell_idx,
-                        "flow": get_val(flows, i),
-                        "temp": get_val(temps, i),
-                        "bod": get_val(bods, i),
-                        "do": get_val(dos, i),
-                        "co2": get_val(co2s, i),
-                        "generic": get_val(generics, i)
+                        "flow": get_val(flows, orig_idx),
+                        "temp": get_val(temps, orig_idx),
+                        "bod": get_val(bods, orig_idx),
+                        "do": get_val(dos, orig_idx),
+                        "co2": get_val(co2s, orig_idx),
+                        "generic": get_val(generics, orig_idx)
                     }
                     self.discharges.append(d)
                 except: continue
@@ -242,7 +242,9 @@ class RiverModel:
             if cell_start > 0:
                 for i in range(cell_start, len(df)):
                     try:
-                        c_idx = int(float(df.iloc[i, 0])) - 1
+                        val0 = df.iloc[i, 0]
+                        if pd.isna(val0): continue
+                        c_idx = int(float(val0)) - 1
                         c_val = float(df.iloc[i, 1])
                         if 0 <= c_idx < self.grid.nc:
                             c.values[c_idx] = c_val
@@ -261,7 +263,6 @@ class RiverModel:
                 for i in range(interval_start, len(df)):
                     try:
                         row = df.iloc[i, :].values
-                        # remove nans
                         row = [x for x in row if pd.notna(x)]
                         if len(row) < 3: continue
                         
@@ -273,7 +274,7 @@ class RiverModel:
         except: pass
             
         self.constituents[name] = c
-        self.results[name] = [] # Init result storage
+        self.results[name] = [] 
 
     # -------------------------------------------------------------------------
     # PHYSICS
@@ -306,18 +307,14 @@ class RiverModel:
             norm_time = (hour - self.atmos.sunrise_hour) / day_len
             Q_max = self.atmos.solar_constant * (1 - 0.65 * (self.atmos.cloud_cover/100)**2)
             Q_sn = Q_max * math.sin(math.pi * norm_time)
-            
-        # Atmos Radiation
+        
         if self.atmos.sky_temp_imposed:
             T_sky = self.atmos.sky_temp + kelvin
         else:
             T_sky = 0.0552 * (T_a_k**1.5)
         Q_an = 0.97 * sigma * (T_sky**4)
-        
-        # Back Radiation
         Q_br = 0.97 * sigma * (T_w_k**4)
         
-        # Evap & Sensible
         es_a = 6.11 * 10**((7.5 * self.atmos.air_temp)/(237.3 + self.atmos.air_temp))
         es_w = 6.11 * 10**((7.5 * water_temp)/(237.3 + water_temp))
         ea = es_a * (self.atmos.humidity / 100.0)
@@ -365,16 +362,14 @@ class RiverModel:
             theta = 0.5
             
             for i in range(nc):
-                if i == 0: # Left BC
+                if i == 0: 
                     b[i] = 1.0
                     d_rhs[i] = prop.values[0]
-                elif i == nc - 1: # Right BC (Zero Gradient)
+                elif i == nc - 1:
                     a[i], b[i], d_rhs[i] = -1.0, 1.0, 0.0
                 else:
-                    # Central Differences
                     alpha = u * dt / (2*dx)
                     gamma = D * dt / (dx**2)
-                    
                     a[i] = theta * (-alpha - gamma)
                     b[i] = 1 + theta * (2*gamma)
                     c_diag[i] = theta * (alpha - gamma)
@@ -383,7 +378,6 @@ class RiverModel:
                     diff_ex = D * (C[i+1] - 2*C[i] + C[i-1]) / (dx**2)
                     d_rhs[i] = C[i] + (1-theta) * dt * (adv_ex + diff_ex)
             
-            # TDMA Solver
             for i in range(1, nc):
                 m = a[i] / b[i-1]
                 b[i] -= m * c_diag[i-1]
@@ -400,12 +394,10 @@ class RiverModel:
         do = self.constituents["DO"].values if "DO" in self.constituents else None
         co2 = self.constituents["CO2"].values if "CO2" in self.constituents else None
         
-        # Heat
         if "Temperature" in self.constituents:
             for i in range(self.grid.nc):
                 self.constituents["Temperature"].values[i] += self.calculate_heat_fluxes(temp[i], self.current_time) * dt
                 
-        # Bio
         if bod is not None and do is not None:
             k1_20 = 0.3
             for i in range(self.grid.nc):
@@ -415,7 +407,6 @@ class RiverModel:
                 do[i] -= dL
                 if co2 is not None: co2[i] += dL * (44.0/32.0)
                 
-        # Reaeration
         if do is not None:
             for i in range(self.grid.nc):
                 k2 = 3.93 * (self.flow.velocity**0.5 / self.grid.water_depth**1.5) * (1.024**(temp[i] - 20)) / 86400.0
@@ -436,17 +427,11 @@ class RiverModel:
         self.apply_kinetics(dt)
         self.current_time += dt
 
-    # -------------------------------------------------------------------------
-    # EXECUTION
-    # -------------------------------------------------------------------------
-
     def run_simulation(self):
-        """Generator for step-by-step execution (UI friendly)"""
         total_steps = int((self.config.duration_days * 86400) / self.config.dt)
         print_interval = int(self.config.dt_print / self.config.dt)
         if print_interval < 1: print_interval = 1
         
-        # Init Results keys
         self.results["times"] = []
         for name in self.constituents:
             self.results[name] = []
@@ -462,7 +447,6 @@ class RiverModel:
             yield step_n / total_steps
             
     def run(self, callback=None):
-        """Compatibility method: runs full simulation, optionally calling callback(progress)"""
         runner = self.run_simulation()
         for progress in runner:
             if callback:
