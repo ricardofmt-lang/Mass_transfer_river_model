@@ -19,13 +19,14 @@ st.sidebar.header("Configuration")
 def load_config_file(label, key_name):
     """
     Loads CSV data from user upload or default string.
-    Uses engine='python' to handle ragged lines (uneven column counts) robustly.
+    Crucially, uses `names=list(range(50))` to handle ragged CSV lines
+    (rows with variable number of columns) without raising ParserError.
     """
     uploaded = st.sidebar.file_uploader(label, type=["csv"], key=key_name)
     if uploaded:
-        return pd.read_csv(uploaded, header=None, engine='python')
+        return pd.read_csv(uploaded, header=None, names=list(range(50)))
     else:
-        return pd.read_csv(StringIO(DEFAULT_CSVS[key_name]), header=None, engine='python')
+        return pd.read_csv(StringIO(DEFAULT_CSVS[key_name]), header=None, names=list(range(50)))
 
 df_main = load_config_file("Main Config", "Main")
 df_river = load_config_file("River Geometry", "River")
