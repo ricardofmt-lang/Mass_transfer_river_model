@@ -17,6 +17,8 @@ dt_print = st.sidebar.number_input("Print Interval (s)", value=3600.0)
 st.sidebar.divider()
 time_disc = st.sidebar.selectbox("Discretisation", ["semi", "imp", "exp"])
 advection = st.sidebar.selectbox("Advection", ["Yes", "No"])
+# Reinstated Advection Type Selection
+adv_type = st.sidebar.selectbox("Advection Type", ["QUICK", "Upwind", "Central"])
 diffusion = st.sidebar.selectbox("Diffusion", ["Yes", "No"])
 
 st.sidebar.divider()
@@ -240,6 +242,8 @@ if run_btn:
         model.config.dt_print = dt_print
         model.config.time_discretisation = time_disc
         model.config.advection_active = (advection == "Yes")
+        # Pass the advection type from sidebar
+        model.config.advection_type = adv_type 
         model.config.diffusion_active = (diffusion == "Yes")
         
         # 3. Discharges
