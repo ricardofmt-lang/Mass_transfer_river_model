@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import math
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Literal
+from typing import List, Dict, Any, Optional
 
 # =============================================================================
 # DATA STRUCTURES
@@ -53,9 +53,9 @@ class Constituent:
     values: np.ndarray
     old_values: np.ndarray
     # Boundary Conditions
-    bc_left_type: str = "Fixed" # Fixed, ZeroGrad, Cyclic
+    bc_left_type: str = "Fixed" 
     bc_left_val: float = 0.0
-    bc_right_type: str = "ZeroGrad"
+    bc_right_type: str = "ZeroGrad" 
     bc_right_val: float = 0.0
     # Kinetics
     k_decay: float = 0.0      
@@ -139,14 +139,12 @@ class RiverModel:
         vals = np.full(self.grid.nc, default_val)
         
         # 2. Apply IC Mode
-        if init_mode == "Cell" and init_cells is not None:
-            # init_cells list of {idx, val}
+        if init_mode == "Cell List" and init_cells is not None:
             for item in init_cells:
                 idx = item['idx']
                 if 0 <= idx < self.grid.nc:
                     vals[idx] = item['val']
         elif init_mode == "Interval" and init_intervals is not None:
-            # init_intervals list of {start, end, val}
             for item in init_intervals:
                 x1, x2, v = item['start'], item['end'], item['val']
                 mask = (self.grid.xc >= x1) & (self.grid.xc <= x2)
@@ -194,6 +192,7 @@ class RiverModel:
         T_w_k = water_temp + kelvin
         T_a_k = self.atmos.air_temp + kelvin
         
+        # Solar
         hour = (time_sec / 3600.0) % 24
         Q_sn = 0.0
         if self.atmos.sunrise_hour < hour < self.atmos.sunset_hour:
@@ -226,18 +225,25 @@ class RiverModel:
             idx = d["cell"]
             q = d["flow"]
             if q <= 0: continue
-            rate = q / vol_cell
             
+            # Analytical mixing factor: exp(-Q/V * dt)
+            mixing_rate = q / vol_cell
+            decay_factor = math.exp(-mixing_rate * dt_split)
+            
+            # Heat
             if "Temperature" in self.constituents:
                 T_c = self.constituents["Temperature"].values[idx]
-                self.constituents["Temperature"].values[idx] += rate * (d["temp"] - T_c) * dt_split
+                T_in = d["temp"]
+                # C_new = C_in + (C_old - C_in) * exp(-rate*dt)
+                self.constituents["Temperature"].values[idx] = T_in + (T_c - T_in) * decay_factor
                 
+            # Others
             for name in ["BOD", "DO", "CO2", "Generic"]:
                 if name in self.constituents:
                     C_c = self.constituents[name].values[idx]
                     key = name.lower() 
                     val_in = d.get(key, 0.0)
-                    self.constituents[name].values[idx] += rate * (val_in - C_c) * dt_split
+                    self.constituents[name].values[idx] = val_in + (C_c - val_in) * decay_factor
 
     def solve_transport(self, dt):
         u = self.flow.velocity
@@ -261,60 +267,49 @@ class RiverModel:
             
             # --- LEFT BOUNDARY (i=0) ---
             if prop.bc_left_type == "Fixed":
-                # C[0] = Val
                 b[0] = 1.0
                 d_rhs[0] = prop.bc_left_val
-            elif prop.bc_left_type == "ZeroGrad":
-                # C[0] - C[1] = 0
+            else: # ZeroGrad
                 b[0] = 1.0
                 c_diag[0] = -1.0
                 d_rhs[0] = 0.0
                 
             # --- RIGHT BOUNDARY (i=nc-1) ---
             if prop.bc_right_type == "Fixed":
-                # C[N] = Val
                 b[nc-1] = 1.0
                 d_rhs[nc-1] = prop.bc_right_val
-            elif prop.bc_right_type == "ZeroGrad":
-                # C[N] - C[N-1] = 0
+            else: # ZeroGrad
                 a[nc-1] = -1.0
                 b[nc-1] = 1.0
                 d_rhs[nc-1] = 0.0
             
             # --- INTERNAL NODES ---
             for i in range(1, nc-1):
-                # Central Differences Crank-Nicolson
                 a[i] = theta * (-alpha - gamma)
                 b[i] = 1 + theta * (2*gamma)
                 c_diag[i] = theta * (alpha - gamma)
                 
-                # Explicit Part (n)
                 adv_ex = -u * (C[i+1] - C[i-1]) / (2*dx)
                 diff_ex = D * (C[i+1] - 2*C[i] + C[i-1]) / (dx**2)
                 d_rhs[i] = C[i] + (1-theta) * dt * (adv_ex + diff_ex)
             
             # --- TDMA SOLVER ---
             C_new = np.zeros(nc)
-            # Forward Elimination
-            # We start from 1 because 0 is the start of the tridiagonal system
-            # But specific BC handling might require careful indexing.
-            # Standard TDMA: b[i]x[i] + c[i]x[i+1] + a[i]x[i-1] = d[i]
-            
-            # Since we modified b[0] and c_diag[0], we can proceed standard way
             c_prime = np.zeros(nc)
             d_prime = np.zeros(nc)
             
-            # i=0
+            # Forward
+            if b[0] == 0: b[0] = 1e-10
             c_prime[0] = c_diag[0] / b[0]
             d_prime[0] = d_rhs[0] / b[0]
             
             for i in range(1, nc):
                 temp = b[i] - a[i] * c_prime[i-1]
-                if temp == 0: temp = 1e-10 # Avoid zero division
+                if temp == 0: temp = 1e-10
                 c_prime[i] = c_diag[i] / temp
                 d_prime[i] = (d_rhs[i] - a[i] * d_prime[i-1]) / temp
                 
-            # Back Substitution
+            # Back
             C_new[nc-1] = d_prime[nc-1]
             for i in range(nc-2, -1, -1):
                 C_new[i] = d_prime[i] - c_prime[i] * C_new[i+1]
@@ -330,9 +325,9 @@ class RiverModel:
         
         if "Temperature" in self.constituents:
             for i in range(self.grid.nc):
-                self.constituents["Temperature"].values[i] += self.calculate_heat_fluxes(temp[i], self.current_time) * dt
+                src = self.calculate_heat_fluxes(temp[i], self.current_time)
+                self.constituents["Temperature"].values[i] += src * dt
 
-        # Generic Decay (First Order)
         if generic is not None:
             k = self.constituents["Generic"].k_decay
             if k > 0:
