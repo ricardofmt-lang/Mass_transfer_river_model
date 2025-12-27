@@ -1,290 +1,444 @@
-import streamlit as st
-import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-from river_core import RiverModel
-
-st.set_page_config(page_title="River Water Quality Model", layout="wide")
-
-# =============================================================================
-# SIDEBAR: CONFIGURATION & RUN
-# =============================================================================
-
-st.sidebar.title("Configuration")
-sim_duration = st.sidebar.number_input("Duration (Days)", value=1.0)
-dt = st.sidebar.number_input("Time Step (s)", value=200.0)
-dt_print = st.sidebar.number_input("Print Interval (s)", value=3600.0)
-st.sidebar.divider()
-time_disc = st.sidebar.selectbox("Discretisation", ["semi", "imp", "exp"])
-advection = st.sidebar.selectbox("Advection", ["Yes", "No"])
-# Reinstated Advection Type Selection
-adv_type = st.sidebar.selectbox("Advection Type", ["QUICK", "Upwind", "Central"])
-diffusion = st.sidebar.selectbox("Diffusion", ["Yes", "No"])
-
-st.sidebar.divider()
-run_btn = st.sidebar.button("Run Simulation", type="primary")
+import pandas as pd
+import math
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional
 
 # =============================================================================
-# MAIN TABS
+# DATA STRUCTURES
 # =============================================================================
 
-st.title("1D River Water Quality Model")
+@dataclass
+class Grid:
+    length: float = 0.0
+    nc: int = 0
+    dx: float = 0.0
+    xc: np.ndarray = field(default_factory=lambda: np.array([]))
+    area_vertical: float = 0.0
+    water_depth: float = 0.0
+    river_width: float = 0.0
+    river_slope: float = 0.0
+    manning_coef: float = 0.0
 
-main_tabs = st.tabs(["River Geometry", "Atmosphere", "Discharges", "Constituents", "Results"])
+@dataclass
+class FlowProperties:
+    velocity: float = 0.0
+    diffusivity: float = 0.0
+    discharge: float = 0.0
 
-with main_tabs[0]: # River Geometry
-    st.header("Channel Properties")
-    col1, col2 = st.columns(2)
-    with col1:
-        L = st.number_input("Length (m)", value=12000.0)
-        nc = st.number_input("Cells", value=300)
-        width = st.number_input("Width (m)", value=100.0)
-    with col2:
-        depth = st.number_input("Depth (m)", value=0.5)
-        slope = st.number_input("Slope (m/m)", value=0.0001, format="%.6f")
-        manning = st.number_input("Manning n", value=0.025, format="%.4f")
-    
-    # Real-time calc
-    area = width * depth
-    perimeter = width + 2*depth
-    rh = area/perimeter if perimeter > 0 else 0
-    vel = (1.0/manning)*(rh**(2/3))*(slope**0.5) if manning > 0 else 0
-    st.success(f"Calculated Velocity: {vel:.4f} m/s | Discharge: {vel*area:.4f} m³/s")
+@dataclass
+class Atmosphere:
+    air_temp: float = 20.0
+    wind_speed: float = 0.0
+    humidity: float = 80.0
+    h_min: float = 6.9
+    solar_constant: float = 1370.0
+    latitude: float = 38.0
+    sky_temp: float = -40.0
+    sky_temp_imposed: bool = False
+    cloud_cover: float = 0.0
+    sunrise_hour: float = 6.0
+    sunset_hour: float = 18.0
+    p_o2: float = 0.2095
+    p_co2: float = 0.000395
+    henry_table_temps: np.ndarray = field(default_factory=lambda: np.array([]))
+    henry_table_o2: np.ndarray = field(default_factory=lambda: np.array([]))
+    henry_table_co2: np.ndarray = field(default_factory=lambda: np.array([]))
 
-with main_tabs[1]: # Atmosphere
-    st.header("Meteo Data")
-    col1, col2 = st.columns(2)
-    with col1:
-        air_temp = st.number_input("Air Temp (°C)", value=20.0)
-        wind = st.number_input("Wind Speed (m/s)", value=0.0)
-        humidity = st.number_input("Humidity (%)", value=80.0)
-    with col2:
-        solar = st.number_input("Solar Const. (W/m²)", value=1370.0)
-        cloud = st.number_input("Cloud Cover (%)", value=0.0)
-        lat = st.number_input("Latitude", value=38.0)
-    
-    c1, c2 = st.columns(2)
-    sunrise = c1.number_input("Sunrise (h)", value=6.0)
-    sunset = c2.number_input("Sunset (h)", value=18.0)
+@dataclass
+class Constituent:
+    name: str
+    active: bool
+    unit: str
+    values: np.ndarray
+    old_values: np.ndarray
+    # Boundary Conditions
+    bc_left_type: str = "Fixed" 
+    bc_left_val: float = 0.0
+    bc_right_type: str = "ZeroGrad" 
+    bc_right_val: float = 0.0
+    # Kinetics
+    k_decay: float = 0.0      
+    reaeration_rate: float = 0.0 
 
-with main_tabs[2]: # Discharges
-    st.header("Discharges Configuration")
-    def_data = pd.DataFrame({
-        "Cell": [1, 60, 100, 140],
-        "Flow (m3/s)": [0.0, 0.0, 0.0, 0.0],
-        "Temp (C)": [30.0, 30.0, 50.0, 50.0],
-        "BOD (mg/L)": [100.0, 100.0, 200.0, 200.0],
-        "DO (mg/L)": [0.0, 0.0, 0.0, 0.0],
-        "CO2 (mg/L)": [1.0, 1.0, 1.0, 1.0],
-        "Generic": [100000.0, 100000.0, 100000.0, 100000.0]
-    })
-    edited_discharges = st.data_editor(def_data, num_rows="dynamic")
-
-with main_tabs[3]: # Constituents
-    st.header("Constituents Parameters")
-    
-    c_subtabs = st.tabs(["Temperature", "DO", "BOD", "CO2", "Generic"])
-    constituents_config = {}
-
-    def render_constituent_tab(key, def_active, def_val, unit, is_generic=False):
-        # 1. Active & Global Default
-        col_a, col_b = st.columns(2)
-        active = col_a.selectbox(f"Active?", ["Yes", "No"], index=0 if def_active else 1, key=f"{key}_act")
-        
-        # 2. Boundary Conditions
-        st.markdown("##### Boundary Conditions")
-        bc_c1, bc_c2 = st.columns(2)
-        with bc_c1:
-            st.markdown("**Left Boundary (Inflow)**")
-            bc_left_type = st.selectbox("Type", ["Fixed Value", "Zero Gradient"], key=f"{key}_bc_l_type")
-            bc_left_val = st.number_input(f"Value ({unit})", value=def_val, key=f"{key}_bc_l_val")
-        with bc_c2:
-            st.markdown("**Right Boundary (Outflow)**")
-            bc_right_type = st.selectbox("Type", ["Zero Gradient", "Fixed Value"], key=f"{key}_bc_r_type")
-            bc_right_val = st.number_input(f"Value ({unit})", value=def_val, key=f"{key}_bc_r_val")
-
-        # 3. Initial Conditions Mode
-        st.markdown("##### Initial Conditions")
-        ic_mode = st.radio("Initialization Mode", ["Default", "Cell List", "Interval"], horizontal=True, key=f"{key}_ic_mode")
-        
-        init_cells = []
-        init_intervals = []
-        default_ic = def_val
-        
-        if ic_mode == "Default":
-            default_ic = st.number_input(f"Global Initial Value ({unit})", value=def_val, key=f"{key}_ic_def")
-        elif ic_mode == "Cell List":
-            st.caption("Define value per cell index.")
-            df_cell = pd.DataFrame(columns=["Cell Index", f"Value ({unit})"])
-            if key == "Temperature": df_cell = pd.DataFrame([[150, 25.0]], columns=["Cell Index", f"Value ({unit})"]) 
-            ed_cell = st.data_editor(df_cell, num_rows="dynamic", key=f"{key}_ic_cell")
-            for _, row in ed_cell.iterrows():
-                try: init_cells.append({"idx": int(row[0]), "val": float(row[1])})
-                except: pass
-        elif ic_mode == "Interval":
-            st.caption("Define value for spatial ranges.")
-            df_int = pd.DataFrame(columns=["Start Dist (m)", "End Dist (m)", f"Value ({unit})"])
-            if key == "Temperature": df_int = pd.DataFrame([[0.0, 2000.0, 18.0]], columns=["Start Dist (m)", "End Dist (m)", f"Value ({unit})"])
-            ed_int = st.data_editor(df_int, num_rows="dynamic", key=f"{key}_ic_int")
-            for _, row in ed_int.iterrows():
-                try: init_intervals.append({"start": float(row[0]), "end": float(row[1]), "val": float(row[2])})
-                except: pass
-        
-        # 4. Kinetics (Generic Only)
-        k_val = 0.0
-        if is_generic:
-            st.markdown("##### Kinetics")
-            k_mode = st.selectbox("Decay Model", ["T90 (Bacteria)", "First Order Decay (k)"], key="gen_k_mode")
-            if k_mode == "T90 (Bacteria)":
-                t90 = st.number_input("T90 (Hours)", value=10.0, key="gen_t90")
-                if t90 > 0: k_val = 2.302585 / (t90 * 3600.0)
-            else:
-                k_day = st.number_input("Decay Rate k (1/day)", value=0.5, key="gen_k")
-                k_val = k_day / 86400.0
-
-        return {
-            "active": active == "Yes",
-            "unit": unit,
-            "init_mode": ic_mode, 
-            "default_val": default_ic,
-            "init_cells": init_cells,
-            "init_intervals": init_intervals,
-            "bc_left_type": "Fixed" if bc_left_type == "Fixed Value" else "ZeroGrad",
-            "bc_left_val": bc_left_val,
-            "bc_right_type": "Fixed" if bc_right_type == "Fixed Value" else "ZeroGrad",
-            "bc_right_val": bc_right_val,
-            "k_decay": k_val
-        }
-
-    with c_subtabs[0]:
-        constituents_config["Temperature"] = render_constituent_tab("Temperature", True, 15.0, "ºC")
-    with c_subtabs[1]:
-        constituents_config["DO"] = render_constituent_tab("DO", True, 8.0, "mg/L")
-    with c_subtabs[2]:
-        constituents_config["BOD"] = render_constituent_tab("BOD", True, 5.0, "mg/L")
-    with c_subtabs[3]:
-        constituents_config["CO2"] = render_constituent_tab("CO2", True, 0.7, "mg/L")
-    with c_subtabs[4]:
-        constituents_config["Generic"] = render_constituent_tab("Generic", True, 0.0, "conc", is_generic=True)
-
-with main_tabs[4]: # Results
-    st.header("Simulation Results")
-    if 'results' not in st.session_state:
-        st.info("Run the simulation to see results here.")
-    else:
-        res = st.session_state['results']
-        xc = st.session_state['grid']
-        times = res['times']
-        
-        r_tabs = st.tabs(["Spatial Profiles", "Time Series", "Table Data"])
-        
-        with r_tabs[0]:
-            st.caption("Distribution along the river at a specific time.")
-            if len(times) > 0:
-                time_idx = st.slider("Time Selector (Days)", 0, len(times)-1, len(times)-1)
-                t_display = times[time_idx]
-                
-                # Separate Graphs per active constituent
-                for name, cfg in constituents_config.items():
-                    if cfg["active"] and name in res and len(res[name]) > 0:
-                        fig, ax = plt.subplots(figsize=(8, 4))
-                        ax.plot(xc, res[name][time_idx], label=name)
-                        ax.set_title(f"{name} Profile at T = {t_display:.3f} days")
-                        ax.set_xlabel("Distance (m)")
-                        ax.set_ylabel(f"{name} ({cfg['unit']})")
-                        ax.legend()
-                        ax.grid(True, alpha=0.3)
-                        st.pyplot(fig)
-                
-        with r_tabs[1]:
-            st.caption("Evolution over time at a specific location.")
-            if len(xc) > 0:
-                loc_opts = [f"{x:.1f} m" for x in xc]
-                sel_loc = st.selectbox("Location Selector", loc_opts)
-                loc_idx = loc_opts.index(sel_loc)
-                
-                for name, cfg in constituents_config.items():
-                    if cfg["active"] and name in res and len(res[name]) > 0:
-                        fig2, ax2 = plt.subplots(figsize=(8, 4))
-                        ts = [step[loc_idx] for step in res[name]]
-                        ax2.plot(times, ts, label=name, color='green')
-                        ax2.set_title(f"{name} Time Series at X = {xc[loc_idx]:.1f} m")
-                        ax2.set_xlabel("Time (Days)")
-                        ax2.set_ylabel(f"{name} ({cfg['unit']})")
-                        ax2.legend()
-                        ax2.grid(True, alpha=0.3)
-                        st.pyplot(fig2)
-                
-        with r_tabs[2]:
-            st.write("Export Data")
-            for name, cfg in constituents_config.items():
-                if cfg["active"] and name in res and len(res[name]) > 0:
-                    with st.expander(f"{name} Data Table"):
-                        df_res = pd.DataFrame(res[name], index=np.round(times, 3), columns=np.round(xc, 1))
-                        st.write(f"Rows=Time (Days), Cols=Distance (m)")
-                        st.dataframe(df_res)
+@dataclass
+class SimulationConfig:
+    duration_days: float = 1.0
+    dt: float = 200.0
+    dt_print: float = 3600.0
+    time_discretisation: str = "semi"
+    advection_active: bool = True
+    advection_type: str = "QUICK" # QUICK, Upwind, Central
+    diffusion_active: bool = True
 
 # =============================================================================
-# RUN LOGIC
+# CORE ENGINE
 # =============================================================================
 
-if run_btn:
-    model = RiverModel()
-    
-    with st.spinner("Simulating..."):
-        # 1. Setup Grid & Atmos
-        model.setup_grid(L, int(nc), width, depth, slope, manning)
-        model.setup_atmos(air_temp, wind, humidity, solar, lat, cloud, sunrise, sunset)
+class RiverModel:
+    def __init__(self):
+        self.grid = Grid()
+        self.flow = FlowProperties()
+        self.atmos = Atmosphere()
+        self.config = SimulationConfig()
+        self.constituents: Dict[str, Constituent] = {}
+        self.discharges = []
+        self.current_time = 0.0
+        self.results = {"times": []}
+
+    def setup_grid(self, length, nc, width, depth, slope, manning):
+        self.grid.length = length
+        self.grid.nc = nc
+        self.grid.dx = length / nc
+        self.grid.xc = np.linspace(self.grid.dx/2, length - self.grid.dx/2, nc)
+        self.grid.river_width = width
+        self.grid.water_depth = depth
+        self.grid.river_slope = slope
+        self.grid.manning_coef = manning
         
-        # 2. Config options
-        model.config.duration_days = sim_duration
-        model.config.dt = dt
-        model.config.dt_print = dt_print
-        model.config.time_discretisation = time_disc
-        model.config.advection_active = (advection == "Yes")
-        # Pass the advection type from sidebar
-        model.config.advection_type = adv_type 
-        model.config.diffusion_active = (diffusion == "Yes")
+        # Geometry & Flow
+        self.grid.area_vertical = width * depth
+        wet_perimeter = width + 2 * depth
+        rh = self.grid.area_vertical / wet_perimeter if wet_perimeter > 0 else 0.1
         
-        # 3. Discharges
-        dis_list = []
-        for idx, row in edited_discharges.iterrows():
-            try:
-                dis_list.append({
-                    "cell": int(row["Cell"]) - 1, 
-                    "flow": float(row["Flow (m3/s)"]),
-                    "temp": float(row["Temp (C)"]),
-                    "bod": float(row["BOD (mg/L)"]),
-                    "do": float(row["DO (mg/L)"]),
-                    "co2": float(row["CO2 (mg/L)"]),
-                    "generic": float(row["Generic"])
-                })
-            except: pass
-        model.set_discharges(dis_list)
-        
-        # 4. Constituents
-        for name, cfg in constituents_config.items():
-            model.add_constituent(
-                name=name,
-                active=cfg["active"],
-                unit=cfg["unit"],
-                init_mode=cfg["init_mode"],
-                default_val=cfg["default_val"],
-                init_cells=cfg["init_cells"],
-                init_intervals=cfg["init_intervals"],
-                bc_left_type=cfg["bc_left_type"],
-                bc_left_val=cfg["bc_left_val"],
-                bc_right_type=cfg["bc_right_type"],
-                bc_right_val=cfg["bc_right_val"],
-                k_decay=cfg["k_decay"]
-            )
+        # Manning
+        if manning > 0:
+            self.flow.velocity = (1.0 / manning) * (rh**(2/3)) * (slope**0.5)
+        else:
+            self.flow.velocity = 0.0
             
-        # 5. Execute
-        try:
-            results = model.run()
-            st.session_state['results'] = results
-            st.session_state['grid'] = model.grid.xc
-            st.toast("Simulation Finished Successfully!", icon="✅")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Simulation Error: {e}")
+        self.flow.discharge = self.flow.velocity * self.grid.area_vertical
+        self.flow.diffusivity = 0.01 + self.flow.velocity * width
+
+    def setup_atmos(self, temp, wind, humidity, solar, lat, cloud, sunrise, sunset, h_min=6.9, sky_temp=-40, sky_imposed=False):
+        self.atmos.air_temp = temp
+        self.atmos.wind_speed = wind
+        self.atmos.humidity = humidity
+        self.atmos.solar_constant = solar
+        self.atmos.latitude = lat
+        self.atmos.cloud_cover = cloud
+        self.atmos.sunrise_hour = sunrise
+        self.atmos.sunset_hour = sunset
+        self.atmos.h_min = h_min
+        self.atmos.sky_temp = sky_temp
+        self.atmos.sky_temp_imposed = sky_imposed
+        
+        # Defaults for Henry's (Temperature, O2, CO2)
+        self.atmos.henry_table_temps = np.array([0, 5, 10, 15, 20, 25, 30])
+        self.atmos.henry_table_o2 = np.array([0.00218, 0.00191, 0.00170, 0.00152, 0.00138, 0.00126, 0.00116])
+        self.atmos.henry_table_co2 = np.array([0.0764, 0.0635, 0.0533, 0.0455, 0.0392, 0.0334, 0.0299])
+
+    def add_constituent(self, name, active, unit, 
+                        init_mode="Default", default_val=0.0, 
+                        init_cells=None, init_intervals=None,
+                        bc_left_type="Fixed", bc_left_val=0.0,
+                        bc_right_type="ZeroGrad", bc_right_val=0.0,
+                        k_decay=0.0):
+        
+        vals = np.full(self.grid.nc, default_val)
+        
+        if init_mode == "Cell List" and init_cells is not None:
+            for item in init_cells:
+                idx = item['idx']
+                if 0 <= idx < self.grid.nc:
+                    vals[idx] = item['val']
+        elif init_mode == "Interval" and init_intervals is not None:
+            for item in init_intervals:
+                x1, x2, v = item['start'], item['end'], item['val']
+                mask = (self.grid.xc >= x1) & (self.grid.xc <= x2)
+                vals[mask] = v
+
+        c = Constituent(
+            name=name,
+            active=active,
+            unit=unit,
+            values=vals,
+            old_values=vals.copy(),
+            bc_left_type=bc_left_type,
+            bc_left_val=bc_left_val,
+            bc_right_type=bc_right_type,
+            bc_right_val=bc_right_val,
+            k_decay=k_decay
+        )
+        self.constituents[name] = c
+        self.results[name] = []
+
+    def set_discharges(self, discharge_list):
+        self.discharges = []
+        for d in discharge_list:
+            if "cell" in d and d["cell"] >= 0 and d["cell"] < self.grid.nc:
+                self.discharges.append(d)
+
+    # -------------------------------------------------------------------------
+    # PHYSICS
+    # -------------------------------------------------------------------------
+
+    def calculate_henry_constant(self, temp_c, gas_type="O2"):
+        vals = self.atmos.henry_table_o2 if gas_type == "O2" else self.atmos.henry_table_co2
+        return np.interp(temp_c, self.atmos.henry_table_temps, vals)
+
+    def calculate_saturation(self, temp_c, gas_type):
+        p_atm = (self.atmos.p_o2 if gas_type == "O2" else self.atmos.p_co2) / 1.01325
+        kh = self.calculate_henry_constant(temp_c, gas_type)
+        mol_l = p_atm * kh
+        mw = 32000.0 if gas_type == "O2" else 44000.0
+        return mol_l * (mw / 1000.0)
+
+    def calculate_heat_fluxes(self, water_temp, time_sec):
+        sigma = 5.67e-8
+        kelvin = 273.15
+        T_w_k = water_temp + kelvin
+        T_a_k = self.atmos.air_temp + kelvin
+        
+        hour = (time_sec / 3600.0) % 24
+        Q_sn = 0.0
+        if self.atmos.sunrise_hour < hour < self.atmos.sunset_hour:
+            day_len = self.atmos.sunset_hour - self.atmos.sunrise_hour
+            norm_time = (hour - self.atmos.sunrise_hour) / day_len
+            Q_max = self.atmos.solar_constant * (1 - 0.65 * (self.atmos.cloud_cover/100)**2)
+            Q_sn = Q_max * math.sin(math.pi * norm_time)
+        
+        if self.atmos.sky_temp_imposed:
+            T_sky = self.atmos.sky_temp + kelvin
+        else:
+            T_sky = 0.0552 * (T_a_k**1.5)
+        Q_an = 0.97 * sigma * (T_sky**4)
+        Q_br = 0.97 * sigma * (T_w_k**4)
+        
+        es_a = 6.11 * 10**((7.5 * self.atmos.air_temp)/(237.3 + self.atmos.air_temp))
+        es_w = 6.11 * 10**((7.5 * water_temp)/(237.3 + water_temp))
+        ea = es_a * (self.atmos.humidity / 100.0)
+        h_conv = self.atmos.h_min + 3.0 * self.atmos.wind_speed 
+        Q_h = h_conv * (water_temp - self.atmos.air_temp)
+        Q_e = 3.0 * self.atmos.wind_speed * (es_w - ea)
+        if Q_e < 0 and (es_w < ea): Q_e = 0
+        
+        Q_net = (0.9 * Q_sn) + Q_an - Q_br - Q_e - Q_h
+        return Q_net / (self.grid.water_depth * 4186000.0)
+
+    def apply_discharges(self, dt_split):
+        vol_cell = self.grid.area_vertical * self.grid.dx
+        for d in self.discharges:
+            idx = d["cell"]
+            q = d["flow"]
+            if q <= 0: continue
+            
+            mixing_rate = q / vol_cell
+            decay_factor = math.exp(-mixing_rate * dt_split)
+            
+            if "Temperature" in self.constituents:
+                T_c = self.constituents["Temperature"].values[idx]
+                T_in = d["temp"]
+                self.constituents["Temperature"].values[idx] = T_in + (T_c - T_in) * decay_factor
+                
+            for name in ["BOD", "DO", "CO2", "Generic"]:
+                if name in self.constituents:
+                    C_c = self.constituents[name].values[idx]
+                    key = name.lower() 
+                    val_in = d.get(key, 0.0)
+                    self.constituents[name].values[idx] = val_in + (C_c - val_in) * decay_factor
+
+    def solve_transport(self, dt):
+        u = self.flow.velocity
+        D = self.flow.diffusivity
+        dx = self.grid.dx
+        nc = self.grid.nc
+        adv_scheme = self.config.advection_type
+        
+        # Courant and Diffusion Numbers
+        sigma = u * dt / dx
+        beta = D * dt / (dx**2)
+        
+        for name, prop in self.constituents.items():
+            if not prop.active: continue
+            C = prop.values
+            
+            # Arrays for TDMA
+            a = np.zeros(nc)
+            b = np.zeros(nc)
+            c_diag = np.zeros(nc)
+            d_rhs = np.zeros(nc)
+            
+            theta = 0.5 if self.config.time_discretisation == "semi" else 1.0
+            
+            # --- INTERNAL NODES ---
+            for i in range(1, nc-1):
+                # 1. Base coefficients (Diffusion)
+                # Left (i-1): -theta * beta
+                # Center (i): 1 + 2*theta*beta
+                # Right (i+1): -theta * beta
+                
+                a_diff = -theta * beta
+                b_diff = 1 + 2 * theta * beta
+                c_diff = -theta * beta
+                
+                rhs_diff = (1-theta)*beta*C[i+1] + (1 - 2*(1-theta)*beta)*C[i] + (1-theta)*beta*C[i-1]
+                
+                # 2. Advection Contribution based on Scheme
+                if adv_scheme == "Upwind" or adv_scheme == "QUICK":
+                    # Implicit Upwind Matrix (Stable)
+                    # LHS: u(C_i - C_i-1)/dx
+                    # i-1: -theta * sigma
+                    # i:   theta * sigma
+                    a_adv = -theta * sigma
+                    b_adv = theta * sigma
+                    c_adv = 0
+                    
+                    # RHS (Explicit part)
+                    rhs_adv = - (1-theta) * sigma * (C[i] - C[i-1])
+                    
+                    if adv_scheme == "QUICK":
+                        # QUICK Deferred Correction
+                        # F_quick_i+1/2 = 0.5(Ci + Ci+1) - 0.125(Ci-1 - 2Ci + Ci+1)
+                        # We add (F_quick - F_upwind) explicitly to RHS
+                        # F_upwind_i+1/2 = Ci
+                        # Assuming u > 0 for this replica
+                        
+                        # Helper for explicit flux at face i+1/2
+                        def get_quick_flux(im1, i0, ip1):
+                            return 0.5*(C[i0] + C[ip1]) - 0.125*(C[im1] - 2*C[i0] + C[ip1])
+                        
+                        # Indices
+                        im1 = i-1
+                        im2 = i-2 if i >= 2 else 0 # Boundary handling for QUICK
+                        
+                        f_quick_out = get_quick_flux(im1, i, i+1)
+                        f_quick_in = get_quick_flux(im2, i-1, i)
+                        
+                        # Upwind fluxes
+                        f_up_out = C[i]
+                        f_up_in = C[i-1]
+                        
+                        # Correction term: - u/dx * [ (Fq_out - Fq_in) - (Fup_out - Fup_in) ]
+                        correction = - (u/dx) * ( (f_quick_out - f_quick_in) - (f_up_out - f_up_in) )
+                        
+                        # Add to RHS (Explicit treatment)
+                        rhs_adv += correction * dt
+
+                else: # Central
+                    # u(C_i+1 - C_i-1)/2dx
+                    # i-1: -theta * sigma / 2
+                    # i+1: theta * sigma / 2
+                    a_adv = -theta * sigma / 2.0
+                    b_adv = 0
+                    c_adv = theta * sigma / 2.0
+                    
+                    rhs_adv = - (1-theta) * (sigma/2.0) * (C[i+1] - C[i-1])
+
+                # Combine
+                a[i] = a_diff + a_adv
+                b[i] = b_diff + b_adv
+                c_diag[i] = c_diff + c_adv
+                d_rhs[i] = rhs_diff + rhs_adv
+            
+            # --- LEFT BOUNDARY (i=0) ---
+            if prop.bc_left_type == "Fixed":
+                b[0] = 1.0
+                d_rhs[0] = prop.bc_left_val
+            else: # ZeroGrad
+                b[0] = 1.0
+                c_diag[0] = -1.0
+                d_rhs[0] = 0.0
+                
+            # --- RIGHT BOUNDARY (i=nc-1) ---
+            if prop.bc_right_type == "Fixed":
+                b[nc-1] = 1.0
+                d_rhs[nc-1] = prop.bc_right_val
+            else: # ZeroGrad
+                a[nc-1] = -1.0
+                b[nc-1] = 1.0
+                d_rhs[nc-1] = 0.0
+            
+            # --- TDMA SOLVER ---
+            C_new = np.zeros(nc)
+            c_prime = np.zeros(nc)
+            d_prime = np.zeros(nc)
+            
+            if b[0] == 0: b[0] = 1e-10
+            c_prime[0] = c_diag[0] / b[0]
+            d_prime[0] = d_rhs[0] / b[0]
+            
+            for i in range(1, nc):
+                temp = b[i] - a[i] * c_prime[i-1]
+                if temp == 0: temp = 1e-10
+                c_prime[i] = c_diag[i] / temp
+                d_prime[i] = (d_rhs[i] - a[i] * d_prime[i-1]) / temp
+                
+            C_new[nc-1] = d_prime[nc-1]
+            for i in range(nc-2, -1, -1):
+                C_new[i] = d_prime[i] - c_prime[i] * C_new[i+1]
+                
+            prop.values = C_new
+
+    def apply_kinetics(self, dt):
+        temp = self.constituents["Temperature"].values if "Temperature" in self.constituents else np.full(self.grid.nc, 20.0)
+        bod = self.constituents["BOD"].values if "BOD" in self.constituents else None
+        do = self.constituents["DO"].values if "DO" in self.constituents else None
+        co2 = self.constituents["CO2"].values if "CO2" in self.constituents else None
+        generic = self.constituents["Generic"].values if "Generic" in self.constituents else None
+        
+        if "Temperature" in self.constituents:
+            for i in range(self.grid.nc):
+                src = self.calculate_heat_fluxes(temp[i], self.current_time)
+                self.constituents["Temperature"].values[i] += src * dt
+
+        if generic is not None:
+            k = self.constituents["Generic"].k_decay
+            if k > 0:
+                for i in range(self.grid.nc):
+                    generic[i] -= k * generic[i] * dt
+
+        if bod is not None and do is not None:
+            k1_20 = 0.3
+            for i in range(self.grid.nc):
+                k1 = k1_20 * (1.047**(temp[i] - 20)) / 86400.0
+                dL = k1 * bod[i] * dt
+                bod[i] -= dL
+                do[i] -= dL
+                if co2 is not None: co2[i] += dL * (44.0/32.0)
+                
+        if do is not None:
+            for i in range(self.grid.nc):
+                k2 = 3.93 * (self.flow.velocity**0.5 / self.grid.water_depth**1.5) * (1.024**(temp[i] - 20)) / 86400.0
+                cs = self.calculate_saturation(temp[i], "O2")
+                do[i] += k2 * (cs - do[i]) * dt
+
+        if co2 is not None:
+            for i in range(self.grid.nc):
+                k2 = 3.93 * (self.flow.velocity**0.5 / self.grid.water_depth**1.5) * (1.024**(temp[i] - 20)) / 86400.0
+                cs = self.calculate_saturation(temp[i], "CO2")
+                co2[i] += k2 * (cs - co2[i]) * dt
+
+    def step(self):
+        dt = self.config.dt
+        self.apply_discharges(0.5 * dt)
+        self.solve_transport(dt)
+        self.apply_discharges(0.5 * dt)
+        self.apply_kinetics(dt)
+        self.current_time += dt
+
+    def run_simulation(self):
+        total_steps = int((self.config.duration_days * 86400) / self.config.dt)
+        print_interval = int(self.config.dt_print / self.config.dt)
+        if print_interval < 1: print_interval = 1
+        
+        self.results["times"] = []
+        for name in self.constituents:
+            self.results[name] = []
+            
+        for step_n in range(total_steps):
+            self.step()
+            
+            if step_n % print_interval == 0:
+                self.results["times"].append(self.current_time / 86400.0)
+                for name, prop in self.constituents.items():
+                    self.results[name].append(prop.values.copy())
+            
+            yield step_n / total_steps
+            
+    def run(self, callback=None):
+        runner = self.run_simulation()
+        for progress in runner:
+            if callback:
+                callback(progress)
+        return self.results
