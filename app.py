@@ -114,7 +114,7 @@ with main_tabs[3]: # Constituents
         elif ic_mode == "Cell List":
             st.caption("Define value per cell index.")
             df_cell = pd.DataFrame(columns=["Cell Index", f"Value ({unit})"])
-            if key == "Temperature": df_cell = pd.DataFrame([[150, 25.0]], columns=["Cell Index", f"Value ({unit})"]) # Example
+            if key == "Temperature": df_cell = pd.DataFrame([[150, 25.0]], columns=["Cell Index", f"Value ({unit})"]) 
             ed_cell = st.data_editor(df_cell, num_rows="dynamic", key=f"{key}_ic_cell")
             for _, row in ed_cell.iterrows():
                 try: init_cells.append({"idx": int(row[0]), "val": float(row[1])})
@@ -143,7 +143,7 @@ with main_tabs[3]: # Constituents
         return {
             "active": active == "Yes",
             "unit": unit,
-            "init_mode": ic_mode, # Default, Cell, Interval
+            "init_mode": ic_mode, 
             "default_val": default_ic,
             "init_cells": init_cells,
             "init_intervals": init_intervals,
@@ -182,17 +182,17 @@ with main_tabs[4]: # Results
                 time_idx = st.slider("Time Selector (Days)", 0, len(times)-1, len(times)-1)
                 t_display = times[time_idx]
                 
-                fig, ax = plt.subplots(figsize=(10, 5))
-                for name in ["Temperature", "DO", "BOD", "CO2", "Generic"]:
-                    if name in res and len(res[name]) > 0:
+                # Separate Graphs per active constituent
+                for name, cfg in constituents_config.items():
+                    if cfg["active"] and name in res and len(res[name]) > 0:
+                        fig, ax = plt.subplots(figsize=(8, 4))
                         ax.plot(xc, res[name][time_idx], label=name)
-                
-                ax.set_title(f"Profile at T = {t_display:.3f} days")
-                ax.set_xlabel("Distance (m)")
-                ax.set_ylabel("Value")
-                ax.legend()
-                ax.grid(True, alpha=0.3)
-                st.pyplot(fig)
+                        ax.set_title(f"{name} Profile at T = {t_display:.3f} days")
+                        ax.set_xlabel("Distance (m)")
+                        ax.set_ylabel(f"{name} ({cfg['unit']})")
+                        ax.legend()
+                        ax.grid(True, alpha=0.3)
+                        st.pyplot(fig)
                 
         with r_tabs[1]:
             st.caption("Evolution over time at a specific location.")
@@ -201,24 +201,26 @@ with main_tabs[4]: # Results
                 sel_loc = st.selectbox("Location Selector", loc_opts)
                 loc_idx = loc_opts.index(sel_loc)
                 
-                fig2, ax2 = plt.subplots(figsize=(10, 5))
-                for name in ["Temperature", "DO", "BOD", "CO2", "Generic"]:
-                    if name in res and len(res[name]) > 0:
+                for name, cfg in constituents_config.items():
+                    if cfg["active"] and name in res and len(res[name]) > 0:
+                        fig2, ax2 = plt.subplots(figsize=(8, 4))
                         ts = [step[loc_idx] for step in res[name]]
-                        ax2.plot(times, ts, label=name)
-                
-                ax2.set_title(f"Time Series at X = {xc[loc_idx]:.1f} m")
-                ax2.set_xlabel("Time (Days)")
-                ax2.set_ylabel("Value")
-                ax2.legend()
-                ax2.grid(True, alpha=0.3)
-                st.pyplot(fig2)
+                        ax2.plot(times, ts, label=name, color='green')
+                        ax2.set_title(f"{name} Time Series at X = {xc[loc_idx]:.1f} m")
+                        ax2.set_xlabel("Time (Days)")
+                        ax2.set_ylabel(f"{name} ({cfg['unit']})")
+                        ax2.legend()
+                        ax2.grid(True, alpha=0.3)
+                        st.pyplot(fig2)
                 
         with r_tabs[2]:
-            if "Temperature" in res and len(res["Temperature"]) > 0:
-                df_res = pd.DataFrame(res["Temperature"], index=np.round(times, 3), columns=np.round(xc, 1))
-                st.write("Temperature Data (Rows=Time, Cols=Distance)")
-                st.dataframe(df_res)
+            st.write("Export Data")
+            for name, cfg in constituents_config.items():
+                if cfg["active"] and name in res and len(res[name]) > 0:
+                    with st.expander(f"{name} Data Table"):
+                        df_res = pd.DataFrame(res[name], index=np.round(times, 3), columns=np.round(xc, 1))
+                        st.write(f"Rows=Time (Days), Cols=Distance (m)")
+                        st.dataframe(df_res)
 
 # =============================================================================
 # RUN LOGIC
@@ -279,7 +281,6 @@ if run_btn:
             st.session_state['results'] = results
             st.session_state['grid'] = model.grid.xc
             st.toast("Simulation Finished Successfully!", icon="✅")
-            # Force rerun to update the Results tab immediately
             st.rerun()
         except Exception as e:
             st.error(f"Simulation Error: {e}")
