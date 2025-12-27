@@ -15,7 +15,6 @@ class Grid:
     dx: float = 0.0
     xc: np.ndarray = field(default_factory=lambda: np.array([]))
     area_vertical: float = 0.0
-    area_horizontal: float = 0.0
     water_depth: float = 0.0
     river_width: float = 0.0
     river_slope: float = 0.0
@@ -26,9 +25,6 @@ class FlowProperties:
     velocity: float = 0.0
     diffusivity: float = 0.0
     discharge: float = 0.0
-    courant_nr: float = 0.0
-    diffusion_nr: float = 0.0
-    grid_reynolds_nr: float = 0.0
 
 @dataclass
 class Atmosphere:
@@ -56,8 +52,10 @@ class Constituent:
     unit: str
     values: np.ndarray
     old_values: np.ndarray
-    decay_rate: float = 0.0
-    reaeration_rate: float = 0.0
+    boundary_left: float = 0.0  # Dirichlet BC at x=0
+    # Specific params
+    k_decay: float = 0.0      # For Generic (from T90) or BOD
+    reaeration_rate: float = 0.0 
 
 @dataclass
 class SimulationConfig:
@@ -84,175 +82,97 @@ class RiverModel:
         self.current_time = 0.0
         self.results = {"times": []}
 
-    # -------------------------------------------------------------------------
-    # PARSING LOGIC
-    # -------------------------------------------------------------------------
-    
-    def parse_vertical_params(self, df, key_col_idx, val_col_idx):
-        """
-        Parses a DataFrame where column A is keys and column B is values.
-        """
-        params = {}
-        # Ensure we are working with string keys
-        keys = df.iloc[:, key_col_idx].astype(str).str.strip()
-        vals = df.iloc[:, val_col_idx]
+    def setup_grid(self, length, nc, width, depth, slope, manning):
+        self.grid.length = length
+        self.grid.nc = nc
+        self.grid.dx = length / nc
+        self.grid.xc = np.linspace(self.grid.dx/2, length - self.grid.dx/2, nc)
+        self.grid.river_width = width
+        self.grid.water_depth = depth
+        self.grid.river_slope = slope
+        self.grid.manning_coef = manning
         
-        for i, key in enumerate(keys):
-            if key in ["nan", "None", "", "NaN"]: continue
-            clean_key = key.replace(":", "")
-            try:
-                val = vals.iloc[i]
-                # If val is a Series (rare), take first
-                if isinstance(val, pd.Series): val = val.iloc[0]
-                
-                try:
-                    params[clean_key] = float(val)
-                except:
-                    params[clean_key] = val
-            except:
-                continue
-        return params
-
-    def load_main_config(self, df):
-        p = self.parse_vertical_params(df, 0, 1)
-        self.config.duration_days = float(p.get("SimulationDuration(Days)", 1))
-        self.config.dt = float(p.get("TimeStep(Seconds)", 200))
-        self.config.dt_print = float(p.get("Dtprint(seconds)", 3600))
-        self.config.time_discretisation = str(p.get("TimeDiscretisation", "semi")).lower()
-        self.config.advection_active = str(p.get("Advection", "Yes")).lower() == "yes"
-        self.config.advection_type = str(p.get("AdvectionType", "QUICK"))
-        self.config.diffusion_active = str(p.get("Diffusion", "Yes")).lower() == "yes"
-
-    def load_river_config(self, df):
-        p = self.parse_vertical_params(df, 0, 1)
-        self.grid.length = float(p.get("ChannelLength", 12000))
-        self.grid.nc = int(p.get("NumberOfCells", 300))
-        self.grid.dx = self.grid.length / self.grid.nc
-        self.grid.xc = np.linspace(self.grid.dx/2, self.grid.length - self.grid.dx/2, self.grid.nc)
-        
-        self.grid.river_width = float(p.get("RiverWidth", 100))
-        self.grid.water_depth = float(p.get("WaterDepth", 0.5))
-        self.grid.river_slope = float(p.get("RiverSlope", 0.0001))
-        self.grid.manning_coef = float(p.get("ManningCoef(n)", 0.025))
-        
-        # Geometry & Flow Calculation
-        self.grid.area_vertical = self.grid.river_width * self.grid.water_depth
-        wet_perimeter = self.grid.river_width + 2 * self.grid.water_depth
+        # Geometry & Flow
+        self.grid.area_vertical = width * depth
+        wet_perimeter = width + 2 * depth
         rh = self.grid.area_vertical / wet_perimeter if wet_perimeter > 0 else 0.1
         
-        # Manning Equation
-        self.flow.velocity = (1.0 / self.grid.manning_coef) * (rh**(2/3)) * (self.grid.river_slope**0.5)
-        self.flow.discharge = self.flow.velocity * self.grid.area_vertical
-        self.flow.diffusivity = 0.01 + self.flow.velocity * self.grid.river_width
-
-    def load_atmosphere_config(self, df):
-        p = self.parse_vertical_params(df, 0, 1)
-        self.atmos.air_temp = float(p.get("AirTemperature", 20))
-        self.atmos.wind_speed = float(p.get("WindSpeed", 0))
-        self.atmos.humidity = float(p.get("AirHumidity", 80))
-        self.atmos.h_min = float(p.get("h_min", 6.9))
-        self.atmos.solar_constant = float(p.get("SolarConstant", 1370))
-        self.atmos.latitude = float(p.get("Latitude", 38))
-        self.atmos.cloud_cover = float(p.get("CloudCover", 0))
-        
-        sky_t = p.get("SkyTemperature", -40)
-        if isinstance(sky_t, str) and sky_t.lower() == 'nan': sky_t = -40
-        self.atmos.sky_temp_imposed = (sky_t != -40 and not pd.isna(sky_t))
-        self.atmos.sky_temp = float(sky_t) if self.atmos.sky_temp_imposed else -40.0
+        # Manning
+        if manning > 0:
+            self.flow.velocity = (1.0 / manning) * (rh**(2/3)) * (slope**0.5)
+        else:
+            self.flow.velocity = 0.0
             
-        self.atmos.sunrise_hour = float(p.get("SunRizeHour", 6))
-        self.atmos.sunset_hour = float(p.get("SunSetHour", 18))
-        self.atmos.p_o2 = float(p.get("O2PartialPressure", 0.2095))
-        self.atmos.p_co2 = float(p.get("CO2PartialPressure", 0.000395))
+        self.flow.discharge = self.flow.velocity * self.grid.area_vertical
+        self.flow.diffusivity = 0.01 + self.flow.velocity * width
 
-        # Hardcoded Henry Constants for robustness if table missing
-        # (Temp, O2, CO2)
-        default_henry = np.array([
-            [0, 0.00218, 0.0764],
-            [10, 0.00170, 0.0533],
-            [20, 0.00138, 0.0392],
-            [30, 0.00116, 0.0299]
-        ])
+    def setup_atmos(self, temp, wind, humidity, solar, lat, cloud, sunrise, sunset, h_min=6.9, sky_temp=-40, sky_imposed=False):
+        self.atmos.air_temp = temp
+        self.atmos.wind_speed = wind
+        self.atmos.humidity = humidity
+        self.atmos.solar_constant = solar
+        self.atmos.latitude = lat
+        self.atmos.cloud_cover = cloud
+        self.atmos.sunrise_hour = sunrise
+        self.atmos.sunset_hour = sunset
+        self.atmos.h_min = h_min
+        self.atmos.sky_temp = sky_temp
+        self.atmos.sky_temp_imposed = sky_imposed
         
-        self.atmos.henry_table_temps = default_henry[:,0]
-        self.atmos.henry_table_o2 = default_henry[:,1]
-        self.atmos.henry_table_co2 = default_henry[:,2]
+        # Defaults for Henry's (Temperature, O2, CO2)
+        self.atmos.henry_table_temps = np.array([0, 5, 10, 15, 20, 25, 30])
+        self.atmos.henry_table_o2 = np.array([0.00218, 0.00191, 0.00170, 0.00152, 0.00138, 0.00126, 0.00116])
+        self.atmos.henry_table_co2 = np.array([0.0764, 0.0635, 0.0533, 0.0455, 0.0392, 0.0334, 0.0299])
 
-    def load_discharges(self, df):
+    def add_constituent(self, name, active, unit, default_val, left_boundary_val, t90=0.0, special_inits=None):
         """
-        Expects a DataFrame that mimics the Horizontal Excel layout:
-        Rows: [DischargeNumbers, DischargeNames, DischargeCells, ..., FlowRates, ...]
-        Cols: [Label, D1, D2, D3, ...]
+        Adds a constituent to the simulation.
+        special_inits: List of dicts {'start_x': float, 'end_x': float, 'value': float}
         """
-        self.discharges = []
+        vals = np.full(self.grid.nc, default_val)
         
-        def get_row_values(key):
-            # Scan first column for key
-            for i, val in enumerate(df.iloc[:,0].astype(str)):
-                if key in val: return df.iloc[i, 1:].values
-            return None
+        # Apply special initial conditions (Intervals)
+        if special_inits:
+            for item in special_inits:
+                x1 = item['start_x']
+                x2 = item['end_x']
+                v = item['value']
+                mask = (self.grid.xc >= x1) & (self.grid.xc <= x2)
+                vals[mask] = v
 
-        locs = get_row_values("DischargeCells")
-        flows = get_row_values("DischargeFlowRates")
-        temps = get_row_values("DischargeTemperatures")
-        bods = get_row_values("DischargeConcentrations_BOD")
-        dos = get_row_values("DischargeConcentrations_DO")
-        co2s = get_row_values("DischargeConcentrations_CO2")
-        generics = get_row_values("DischargeGeneric")
+        # Calculate decay k for Generic if T90 provided (T90 in hours -> k in 1/s)
+        # k = 2.3026 / (T90 * 3600)
+        k = 0.0
+        if name == "Generic" and t90 > 0:
+            k = 2.302585 / (t90 * 3600.0)
 
-        if locs is not None:
-            # Iterate through columns (Discharges)
-            for i in range(len(locs)):
-                try:
-                    val = locs[i]
-                    if pd.isna(val) or val == "": continue
-                    cell_idx = int(float(val)) - 1
-                    if cell_idx < 0: continue
-                    
-                    def get_val(arr, idx):
-                        if arr is None or idx >= len(arr) or pd.isna(arr[idx]) or arr[idx] == "": return 0.0
-                        try: return float(arr[idx])
-                        except: return 0.0
-
-                    d = {
-                        "cell": cell_idx,
-                        "flow": get_val(flows, i),
-                        "temp": get_val(temps, i),
-                        "bod": get_val(bods, i),
-                        "do": get_val(dos, i),
-                        "co2": get_val(co2s, i),
-                        "generic": get_val(generics, i)
-                    }
-                    self.discharges.append(d)
-                except: continue
-
-    def load_constituent(self, name, df):
-        p = self.parse_vertical_params(df, 0, 1)
-        active = str(p.get("PropertyActive", "No")).lower() == "yes"
-        unit = str(p.get("PropertyUnits", "-"))
-        default_val = float(p.get("DefaultValue", 0.0))
-        
         c = Constituent(
             name=name,
             active=active,
             unit=unit,
-            values=np.full(self.grid.nc, default_val),
-            old_values=np.full(self.grid.nc, default_val)
+            values=vals,
+            old_values=vals.copy(),
+            boundary_left=left_boundary_val,
+            k_decay=k
         )
-        
-        # For simplicity in this robust version, we rely on DefaultValue
-        # Advanced interval initialization would go here parsing the df
-            
         self.constituents[name] = c
-        self.results[name] = [] 
+        self.results[name] = []
+
+    def set_discharges(self, discharge_list):
+        """
+        discharge_list: List of dicts with keys: cell, flow, temp, bod, do, co2, generic
+        """
+        self.discharges = []
+        for d in discharge_list:
+            # Ensure 0-based index
+            if "cell" in d and d["cell"] >= 0 and d["cell"] < self.grid.nc:
+                self.discharges.append(d)
 
     # -------------------------------------------------------------------------
-    # PHYSICS (No Changes - Exact Replica of Formulae)
+    # PHYSICS
     # -------------------------------------------------------------------------
 
     def calculate_henry_constant(self, temp_c, gas_type="O2"):
-        if len(self.atmos.henry_table_temps) == 0:
-            return 0.001 if gas_type=="O2" else 0.03
         vals = self.atmos.henry_table_o2 if gas_type == "O2" else self.atmos.henry_table_co2
         return np.interp(temp_c, self.atmos.henry_table_temps, vals)
 
@@ -269,6 +189,7 @@ class RiverModel:
         T_w_k = water_temp + kelvin
         T_a_k = self.atmos.air_temp + kelvin
         
+        # Solar
         hour = (time_sec / 3600.0) % 24
         Q_sn = 0.0
         if self.atmos.sunrise_hour < hour < self.atmos.sunset_hour:
@@ -299,21 +220,23 @@ class RiverModel:
         vol_cell = self.grid.area_vertical * self.grid.dx
         for d in self.discharges:
             idx = d["cell"]
-            if idx >= self.grid.nc: continue
             q = d["flow"]
             if q <= 0: continue
             rate = q / vol_cell
             
+            # Heat
             if "Temperature" in self.constituents:
                 T_c = self.constituents["Temperature"].values[idx]
                 self.constituents["Temperature"].values[idx] += rate * (d["temp"] - T_c) * dt_split
-                
+            
+            # Others
             for name in ["BOD", "DO", "CO2", "Generic"]:
                 if name in self.constituents:
                     C_c = self.constituents[name].values[idx]
-                    key = name.lower()
-                    if key == "generic": key = "generic"
-                    self.constituents[name].values[idx] += rate * (d.get(key,0) - C_c) * dt_split
+                    # Map dict keys to names
+                    key = name.lower() 
+                    val_in = d.get(key, 0.0)
+                    self.constituents[name].values[idx] += rate * (val_in - C_c) * dt_split
 
     def solve_transport(self, dt):
         u = self.flow.velocity
@@ -326,27 +249,41 @@ class RiverModel:
             C = prop.values
             C_new = np.zeros_like(C)
             
-            # Semi-Implicit TDMA
-            a, b, c_diag, d_rhs = np.zeros(nc), np.zeros(nc), np.zeros(nc), np.zeros(nc)
-            theta = 0.5
+            # Arrays for TDMA
+            a = np.zeros(nc)
+            b = np.zeros(nc)
+            c_diag = np.zeros(nc) # 'c' of the diag, not speed
+            d_rhs = np.zeros(nc)
+            
+            theta = 0.5 if self.config.time_discretisation == "semi" else 1.0
+            if self.config.time_discretisation == "exp": theta = 0.0 # Not fully implemented for exp
+            
+            # Coefficients
+            alpha = u * dt / (2*dx)
+            gamma = D * dt / (dx**2)
             
             for i in range(nc):
                 if i == 0: 
+                    # Left Boundary: Fixed Value (Dirichlet)
                     b[i] = 1.0
-                    d_rhs[i] = prop.values[0]
+                    d_rhs[i] = prop.boundary_left
                 elif i == nc - 1:
-                    a[i], b[i], d_rhs[i] = -1.0, 1.0, 0.0
+                    # Right Boundary: Zero Gradient (Neumann) -> C_N - C_N-1 = 0
+                    a[i] = -1.0
+                    b[i] = 1.0
+                    d_rhs[i] = 0.0
                 else:
-                    alpha = u * dt / (2*dx)
-                    gamma = D * dt / (dx**2)
+                    # Internal Nodes (Central Difference)
                     a[i] = theta * (-alpha - gamma)
                     b[i] = 1 + theta * (2*gamma)
                     c_diag[i] = theta * (alpha - gamma)
                     
+                    # Explicit Part (RHS)
                     adv_ex = -u * (C[i+1] - C[i-1]) / (2*dx)
                     diff_ex = D * (C[i+1] - 2*C[i] + C[i-1]) / (dx**2)
                     d_rhs[i] = C[i] + (1-theta) * dt * (adv_ex + diff_ex)
             
+            # TDMA Solver
             for i in range(1, nc):
                 m = a[i] / b[i-1]
                 b[i] -= m * c_diag[i-1]
@@ -362,11 +299,22 @@ class RiverModel:
         bod = self.constituents["BOD"].values if "BOD" in self.constituents else None
         do = self.constituents["DO"].values if "DO" in self.constituents else None
         co2 = self.constituents["CO2"].values if "CO2" in self.constituents else None
+        generic = self.constituents["Generic"].values if "Generic" in self.constituents else None
         
+        # 1. Temperature Source
         if "Temperature" in self.constituents:
             for i in range(self.grid.nc):
                 self.constituents["Temperature"].values[i] += self.calculate_heat_fluxes(temp[i], self.current_time) * dt
-                
+
+        # 2. Generic Decay (E. coli)
+        if generic is not None:
+            k = self.constituents["Generic"].k_decay
+            if k > 0:
+                for i in range(self.grid.nc):
+                    # dC/dt = -kC
+                    generic[i] -= k * generic[i] * dt
+
+        # 3. BOD & DO Coupling
         if bod is not None and do is not None:
             k1_20 = 0.3
             for i in range(self.grid.nc):
@@ -375,9 +323,11 @@ class RiverModel:
                 bod[i] -= dL
                 do[i] -= dL
                 if co2 is not None: co2[i] += dL * (44.0/32.0)
-                
+        
+        # 4. Reaeration
         if do is not None:
             for i in range(self.grid.nc):
+                # O'Connor Dobbins
                 k2 = 3.93 * (self.flow.velocity**0.5 / self.grid.water_depth**1.5) * (1.024**(temp[i] - 20)) / 86400.0
                 cs = self.calculate_saturation(temp[i], "O2")
                 do[i] += k2 * (cs - do[i]) * dt
