@@ -1,6 +1,3 @@
-# This file contains the raw CSV content from the provided Excel file.
-# We cleaned up the excessive trailing commas to prevent parsing errors.
-
 DEFAULT_CSVS = {
     "Main": """Simulation Options,
 ,ExecutableFile:,C:\\EXCEL_TEM\\Channel_TempOD&BOD&CO2SourceCode2020.xlsm
