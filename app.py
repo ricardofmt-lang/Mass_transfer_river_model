@@ -17,11 +17,15 @@ st.title("1D River Water Quality Model")
 st.sidebar.header("Configuration")
 
 def load_config_file(label, key_name):
+    """
+    Loads CSV data from user upload or default string.
+    Uses engine='python' to handle ragged lines (uneven column counts) robustly.
+    """
     uploaded = st.sidebar.file_uploader(label, type=["csv"], key=key_name)
     if uploaded:
-        return pd.read_csv(uploaded, header=None)
+        return pd.read_csv(uploaded, header=None, engine='python')
     else:
-        return pd.read_csv(StringIO(DEFAULT_CSVS[key_name]), header=None)
+        return pd.read_csv(StringIO(DEFAULT_CSVS[key_name]), header=None, engine='python')
 
 df_main = load_config_file("Main Config", "Main")
 df_river = load_config_file("River Geometry", "River")
@@ -44,30 +48,38 @@ if st.button("Run Simulation", type="primary"):
     
     # 2. Load Data
     with st.spinner("Initializing Model..."):
-        model.load_main_config(df_main)
-        model.load_river_config(df_river)
-        model.load_atmosphere_config(df_atmos)
-        model.load_discharges(df_dis)
-        model.load_constituent("Temperature", df_temp)
-        model.load_constituent("DO", df_do)
-        model.load_constituent("BOD", df_bod)
-        model.load_constituent("CO2", df_co2)
+        try:
+            model.load_main_config(df_main)
+            model.load_river_config(df_river)
+            model.load_atmosphere_config(df_atmos)
+            model.load_discharges(df_dis)
+            model.load_constituent("Temperature", df_temp)
+            model.load_constituent("DO", df_do)
+            model.load_constituent("BOD", df_bod)
+            model.load_constituent("CO2", df_co2)
+        except Exception as e:
+            st.error(f"Error reading configuration: {e}")
+            st.stop()
 
     # 3. Run
     progress_bar = st.progress(0)
     status_text = st.empty()
     
     # Execute using the generator
-    runner = model.run_simulation()
-    for progress in runner:
-        progress_bar.progress(progress)
-    
-    progress_bar.progress(1.0)
-    status_text.success("Simulation Complete!")
-    
-    # 4. Save Results
-    st.session_state['results'] = model.results
-    st.session_state['grid'] = model.grid.xc
+    try:
+        runner = model.run_simulation()
+        for progress in runner:
+            progress_bar.progress(progress)
+        
+        progress_bar.progress(1.0)
+        status_text.success("Simulation Complete!")
+        
+        # 4. Save Results
+        st.session_state['results'] = model.results
+        st.session_state['grid'] = model.grid.xc
+        
+    except Exception as e:
+        st.error(f"Simulation failed: {e}")
 
 # =============================================================================
 # VISUALIZATION
@@ -84,7 +96,8 @@ if 'results' in st.session_state:
         st.subheader("Spatial Profiles")
         if len(times) > 0:
             time_idx = st.slider("Select Time (Days)", 0, len(times)-1, len(times)-1)
-            st.write(f"Time: {times[time_idx]:.3f} days")
+            t_val = times[time_idx]
+            st.write(f"Time: {t_val:.3f} days")
             
             fig, ax = plt.subplots(figsize=(10, 5))
             
@@ -94,28 +107,32 @@ if 'results' in st.session_state:
                     ax.plot(xc, res[name][time_idx], label=name)
             
             ax.set_xlabel("Distance (m)")
+            ax.set_ylabel("Value")
             ax.legend()
             ax.grid(True)
             st.pyplot(fig)
         
     with tab2:
         st.subheader("Time Series")
-        loc_opts = [f"{x:.1f} m" for x in xc]
-        sel_loc = st.selectbox("Select Location", loc_opts, index=0)
-        loc_idx = loc_opts.index(sel_loc)
-        
-        fig2, ax2 = plt.subplots(figsize=(10, 5))
-        
-        for name in ["Temperature", "DO", "BOD", "CO2"]:
-            if name in res and len(res[name]) > 0:
-                ts_data = [step[loc_idx] for step in res[name]]
-                ax2.plot(times, ts_data, label=name)
-                
-        ax2.set_xlabel("Time (Days)")
-        ax2.legend()
-        ax2.grid(True)
-        st.pyplot(fig2)
+        if len(xc) > 0:
+            loc_opts = [f"{x:.1f} m" for x in xc]
+            sel_loc = st.selectbox("Select Location", loc_opts, index=0)
+            loc_idx = loc_opts.index(sel_loc)
+            
+            fig2, ax2 = plt.subplots(figsize=(10, 5))
+            
+            for name in ["Temperature", "DO", "BOD", "CO2"]:
+                if name in res and len(res[name]) > 0:
+                    ts_data = [step[loc_idx] for step in res[name]]
+                    ax2.plot(times, ts_data, label=name)
+                    
+            ax2.set_xlabel("Time (Days)")
+            ax2.set_ylabel("Value")
+            ax2.legend()
+            ax2.grid(True)
+            st.pyplot(fig2)
 
     with tab3:
         if "Temperature" in res and len(res["Temperature"]) > 0:
+             st.write("Temperature Data Preview:")
              st.dataframe(pd.DataFrame(res["Temperature"]))
