@@ -1,8 +1,7 @@
 import numpy as np
-import pandas as pd
 import math
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import Dict, List, Optional
 
 # =============================================================================
 # DATA STRUCTURES
@@ -58,8 +57,9 @@ class Constituent:
     max_val: float = 1e9
     
     # Boundary Conditions
-    bc_type: str = "Fixed" # "Fixed", "ZeroGrad", "Cyclic" (Temp only)
+    bc_left_type: str = "Fixed"
     bc_left_val: float = 0.0
+    bc_right_type: str = "ZeroGrad"
     bc_right_val: float = 0.0
     
     # Flux Toggles
@@ -134,7 +134,8 @@ class RiverModel:
     def add_constituent(self, name, active, unit, 
                         init_mode="Default", default_val=0.0, 
                         init_cells=None, init_intervals=None,
-                        bc_type="Fixed", bc_left_val=0.0, bc_right_val=0.0,
+                        bc_left_type="Fixed", bc_left_val=0.0,
+                        bc_right_type="ZeroGrad", bc_right_val=0.0,
                         min_val=-1e9, max_val=1e9,
                         # Specific flags
                         use_surface_flux=True, use_sensible=True, use_latent=True, use_radiative=True,
@@ -158,7 +159,8 @@ class RiverModel:
             name=name, active=active, unit=unit,
             values=vals, old_values=vals.copy(),
             min_val=min_val, max_val=max_val,
-            bc_type=bc_type, bc_left_val=bc_left_val, bc_right_val=bc_right_val,
+            bc_left_type=bc_left_type, bc_left_val=bc_left_val,
+            bc_right_type=bc_right_type, bc_right_val=bc_right_val,
             use_surface_flux=use_surface_flux,
             use_sensible_heat=use_sensible,
             use_latent_heat=use_latent,
@@ -263,11 +265,9 @@ class RiverModel:
             if not prop.active: continue
             C = prop.values
             
-            # Cyclic Solver (Sherman-Morrison) or Standard TDMA
-            is_cyclic = (prop.bc_type == "Cyclic")
+            is_cyclic = (prop.bc_left_type == "Cyclic")
             
             # Arrays for TDMA
-            # Matrix form: A[i] * C[i-1] + B[i] * C[i] + C_diag[i] * C[i+1] = D_rhs[i]
             a = np.zeros(nc)
             b = np.zeros(nc)
             c_diag = np.zeros(nc)
@@ -299,9 +299,7 @@ class RiverModel:
                         adv_term_exp = -(1-theta)*sigma*(C[i] - C[i-1])
                         
                         if self.config.advection_type == "QUICK":
-                            # Deferred correction for explicit side
                             im2 = i-2 if i>=2 else 0
-                            # Fluxes
                             fq_out = 0.5*(C[i]+C[i+1]) - 0.125*(C[i-1]-2*C[i]+C[i+1])
                             fq_in = 0.5*(C[i-1]+C[i]) - 0.125*(C[im2]-2*C[i-1]+C[i])
                             fu_out, fu_in = C[i], C[i-1]
@@ -315,49 +313,23 @@ class RiverModel:
                     d_rhs[i] += adv_term_exp
 
             # --- BOUNDARIES ---
-            # Explicitly define 0 and N-1
-            # Note: For simplicity in this replica, we treat 0 and N-1 using the Boundary Condition Logic
-            # rather than equation discretization, unless cyclic.
-            
             if is_cyclic:
-                # Approximate Cyclic: Simply equate C[0] to C[N-1] in matrix?
-                # Actually, standard way is to handle corners. 
-                # For this Streamlit replica, we simply set corners to preserve mass or continuity.
-                # Left Boundary (0): 
-                # a[0] (wraps N-1), b[0], c[0]
-                # Right Boundary (N-1):
-                # a[N-1], b[N-1], c[N-1] (wraps 0)
-                # This requires complex solver.
-                # FALLBACK: Explicit copy for Cyclic (Stable enough for small dt)
-                # C[0] = C[N-1]
-                # Solve domain 1..N-2? 
-                # Let's stick to a robust standard:
-                # Force values at boundaries to be equal?
                 b[0] = 1.0; d_rhs[0] = C[nc-1]
                 b[nc-1] = 1.0; d_rhs[nc-1] = C[0]
-                # This is "Lagged" cyclic. stable for semi-implicit.
             else:
                 # Left
-                if prop.bc_type == "Fixed":
+                if prop.bc_left_type == "Fixed":
                     b[0] = 1.0; d_rhs[0] = prop.bc_left_val
                 else: # ZeroGrad
                     b[0] = 1.0; c_diag[0] = -1.0; d_rhs[0] = 0.0
                 
                 # Right
-                # We usually supply 2 BCs. The UI asks for Left and Right.
-                # If "Fixed" -> C[N-1] = Val
-                # If "ZeroGrad" -> C[N-1] = C[N-2]
-                if prop.bc_right_type == "Fixed": # Actually UI stores this in bc_right_type? No, dataclass field is bc_right_type?
-                    # The dataclass definition above has bc_right_type.
-                    pass # Handled below
-                
                 if prop.bc_right_type == "Fixed":
                     b[nc-1] = 1.0; d_rhs[nc-1] = prop.bc_right_val
-                else:
+                else: # ZeroGrad
                     a[nc-1] = -1.0; b[nc-1] = 1.0; d_rhs[nc-1] = 0.0
 
             # --- SOLVE ---
-            # TDMA
             if b[0] == 0: b[0] = 1e-15
             cp = np.zeros(nc)
             dp = np.zeros(nc)
@@ -371,7 +343,7 @@ class RiverModel:
                 cp[i] = c_diag[i] / denom
                 dp[i] = (d_rhs[i] - a[i]*dp[i-1]) / denom
             
-            C_new = np.zeros(nc) # Initialize properly
+            C_new = np.zeros(nc)
             C_new[nc-1] = dp[nc-1]
             for i in range(nc-2, -1, -1):
                 C_new[i] = dp[i] - cp[i]*C_new[i+1]
@@ -412,27 +384,20 @@ class RiverModel:
             for i in range(self.grid.nc):
                 rate = 0.0
                 if bod_prop.use_logistic:
-                    # Growth
                     k_g = bod_prop.k_growth
                     L_max = bod_prop.max_val_logistic
                     if L_max != 0:
                         rate = k_g * vals[i] * (1 - vals[i]/L_max)
                     vals[i] += rate * dt
                 else:
-                    # Decay
-                    # Anaerobic Check
                     k1 = bod_prop.k_decay * (1.047**(temp[i]-20)) / 86400.0
                     L = vals[i]
-                    
-                    # DO Limitation
                     f_ox = 1.0
                     if do_prop:
                         do_val = do_prop.values[i]
                         ks = bod_prop.o2_half_sat
                         if ks > 0: f_ox = do_val / (ks + do_val)
                     
-                    # If anaerobic is ON, decay happens fully (k1*L) but DO consumption is limited
-                    # If anaerobic OFF, decay is limited by DO (k1*L*f_ox)
                     decay_rate = k1 * L
                     if not bod_prop.use_anaerobic:
                         decay_rate *= f_ox
@@ -440,8 +405,7 @@ class RiverModel:
                     vals[i] -= decay_rate * dt
                     
                     if do_prop:
-                        # Oxygen consumed only by aerobic portion
-                        dDO = decay_rate * f_ox # Simplified coupling
+                        dDO = decay_rate * f_ox
                         do_prop.values[i] -= dDO
                     if co2_prop:
                         dCO2 = decay_rate * (44.0/32.0)
