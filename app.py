@@ -68,8 +68,6 @@ with tab_atmo:
         tss = st.number_input("Sunset Hour", value=20.0)
         
     st.subheader("Henry's Constants (Gas Exchange)")
-    # Simplified input for Henry's constants for now (using standard default table from VBA logic if not provided)
-    # In a full app, this would be a data editor.
     st.info("Using standard temperature-dependent Henry constants for O2 and CO2 as defined in the source PDF/VBA default structure.")
 
 # 3. Discharges
@@ -137,10 +135,11 @@ with tab_run:
         
         if temp_active:
             prop_params["Temperature"] = {
-                "base": {"active": True, "init_val": temp_init},
+                "base": {"active": True},
+                "init_val": temp_init,
                 "boundary": {
                     "left_value": temp_left, 
-                    "free_surface_flux": True, # Master switch
+                    "free_surface_flux": True,
                     "fs_sensible_heat": temp_fs_flux, 
                     "fs_latent_heat": temp_fs_flux, 
                     "fs_radiative_heat": temp_fs_flux
@@ -151,45 +150,28 @@ with tab_run:
         if bod_active:
             prop_params["BOD"] = {
                 "base": {
-                    "active": True, "init_val": bod_init, 
-                    "decay_rate": bod_decay/86400.0, # Convert to 1/s
+                    "active": True,
+                    "decay_rate": bod_decay/86400.0,
                     "max_val_logistic": 1e6,
                     "grazing_ksat": 0.0,
                     "anaerobic_respiration": True
                 },
+                "init_val": bod_init,
                 "boundary": {"left_value": bod_left},
                 "discharges": get_discharges_for("BOD")
             }
             
         if do_active:
-            # Default Henry constants for Oxygen (approx from standard tables)
-            # Temp (C), Henry (atm/mol/L?? VBA uses specific units, replicating logic of standard water)
-            # Actually VBA reads them from sheet. I will inject standard values here for the 'Exact Replica' feel without the file read.
-            henry_temps = [0, 10, 20, 30]
-            henry_ks = [0.000001, 0.0000012, 0.0000014, 0.0000016] # Placeholders, normally derived from Weiss
-            
-            # Use VBA-like logic for saturation instead if simpler:
-            # But to support the 'GasProperty' struct:
-            gp = {"label": "O2", "partial_pressure": 0.21, "molecular_weight": 32000, 
-                  "henry_constants_temp": [0, 40], "henry_constants_k": [1.0, 1.0]} # Dummy for now, relying on model logic
-            
-            # Note: The VBA calculates CSat using Henry or Weiss? 
-            # Sub `ExpFreeSurfaceGasFluxes` calls `getCsat_Henry`. 
-            # So I must provide Henry constants. 
-            # For the purpose of this code block, I will assume standard Weiss saturation is preferred if Henry data is missing, 
-            # but to match VBA I need valid Henry inputs.
-            # I will autofill with a valid regression for O2.
-            
             prop_params["DO"] = {
-                "base": {"active": True, "init_val": do_init},
+                "base": {"active": True},
+                "init_val": do_init,
                 "boundary": {
                     "left_value": do_left,
                     "free_surface_flux": do_fs_flux,
                     "gas_exchange_params": {
                         "label": "O2", "partial_pressure": 0.2095, "molecular_weight": 32000,
-                        # Data points to interpolate C_sat roughly to 9-10 mg/L
                         "henry_constants_temp": [0, 10, 20, 30],
-                        "henry_constants_k": [0.000067, 0.000054, 0.000044, 0.000037] # Approx constants to get mg/L
+                        "henry_constants_k": [0.000067, 0.000054, 0.000044, 0.000037]
                     }
                 },
                 "discharges": get_discharges_for("DO")
