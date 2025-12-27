@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from river_core import RiverModel
+import math
 
 st.set_page_config(page_title="River Water Quality Model", layout="wide")
 
@@ -13,8 +14,6 @@ def get_step(val):
     if val == 0: return 0.1
     magnitude = 10**math.floor(math.log10(abs(val)))
     return float(magnitude)
-
-import math
 
 # =============================================================================
 # SIDEBAR
@@ -29,8 +28,6 @@ advection = st.sidebar.selectbox("Advection", ["Yes", "No"])
 adv_type = "QUICK"
 quick_ratio = 4.0
 
-# Always show Advection Type but rename/disable if needed contextually? 
-# User asked to keep it visible.
 adv_type = st.sidebar.selectbox("Advection Type / Scheme", ["QUICK", "Upwind", "Central"])
 if adv_type == "QUICK":
     quick_ratio = st.sidebar.number_input("QUICK UP Ratio", value=4.0, step=0.1)
@@ -61,7 +58,6 @@ with main_tabs[0]:
         diff_disabled = (diffusion == "No")
         diff_in = st.number_input("Diffusivity (m²/s)", value=1.0, step=0.1, disabled=diff_disabled)
 
-    # Calculations
     area = width * depth
     perimeter = width + 2*depth
     rh = area/perimeter if perimeter > 0 else 0
@@ -101,7 +97,6 @@ with main_tabs[1]:
 with main_tabs[2]:
     st.header("Discharges")
     
-    # 1 Default Row
     if 'dis_df' not in st.session_state:
         st.session_state['dis_df'] = pd.DataFrame({
             "Cell": [1],
@@ -116,12 +111,10 @@ with main_tabs[2]:
     
     dx = L / nc if nc > 0 else 1
     
-    # Helper to sync
     col_mode = st.radio("Edit Mode", ["By Cell", "By Distance"], horizontal=True)
     
     edited = st.data_editor(st.session_state['dis_df'], num_rows="dynamic")
     
-    # Logic: If mode is Cell, update Distance. If Distance, update Cell.
     if col_mode == "By Cell":
         edited["Distance (m)"] = (edited["Cell"] - 0.5) * dx
     else:
@@ -144,50 +137,20 @@ with main_tabs[3]:
         max_v = c4.number_input(f"Max {unit}", value=1000.0, step=1.0, key=f"{key}_max")
         
         st.markdown("##### Boundary Conditions")
-        # Cyclic only for Temperature per user constraint
         is_temp = (key == "Temperature")
-        bc_opts = ["Fixed", "ZeroGrad"]
-        if is_temp: bc_opts.append("Cyclic")
         
-        bc_type = st.selectbox("Boundary Type", bc_opts, key=f"{key}_bc_type")
-        
-        b_l_v, b_r_v = 0.0, 0.0
-        if bc_type != "Cyclic":
-            c_l, c_r = st.columns(2)
-            b_l_v = c_l.number_input("Left Value (x=0)", value=def_val, step=get_step(def_val), key=f"{key}_bclv")
-            # Right boundary type: Fixed or ZeroGrad? User said "Right set equal to left" implies cyclic.
-            # But non-cyclic usually allow distinct. I'll provide standard Right options if not cyclic.
-            # Actually, user pointed out: "You put cyclic everywhere! only temp".
-            # So for non-temp, we need Left and Right BCs.
-            # I will simplify: Single Type selector. If Fixed, both Fixed? No, usually distinct.
-            # Let's fallback to Left/Right separate unless Cyclic.
-            pass
-        
-        # Redo BC UI to be safer
-        bc_l_type = "Fixed"
-        bc_r_type = "ZeroGrad"
-        
-        if bc_type == "Cyclic":
-            st.info("Cyclic: Outflow = Inflow.")
-            bc_l_type = "Cyclic" # Marker
-        else:
-            # If not global cyclic, allow detailed config
-            # But the user complained about "Cyclic on one side".
-            # So BC Type applies to the *Scheme* of boundary? 
-            # I'll let user choose Left Type/Val and Right Type/Val.
-            # BUT Cyclic is a special mode.
-            pass 
-            
-        # Re-Redo BC Logic based on feedback
-        # "Cyclic applies to both... separate question".
-        # So:
+        # Determine options based on constituent
+        # Temp has Cyclic, others have Fixed/ZeroGrad
         if is_temp:
-            is_cyclic = st.checkbox("Cyclic Boundary?", value=False, key=f"{key}_cyclic_check")
+            is_cyclic = st.checkbox("Cyclic Boundary (Inflow=Outflow)?", value=False, key=f"{key}_cyclic")
         else:
             is_cyclic = False
             
+        bc_l_type, bc_r_type = "Fixed", "ZeroGrad"
+        b_l_v, b_r_v = 0.0, 0.0
+        
         if is_cyclic:
-            bc_l_type = "Cyclic"
+            bc_l_type = "Cyclic" # Marker
             bc_r_type = "Cyclic"
         else:
             b1, b2 = st.columns(2)
@@ -264,7 +227,6 @@ with main_tabs[3]:
         mode = st.selectbox("Decay Model", ["T90 (Hours)", "Half-Life (Days)", "T-Duplicate (Days)", "Rate (1/day)"])
         val = st.number_input("Parameter Value", 10.0, step=1.0)
         
-        # Convert to k (1/sec)
         k_sec = 0.0
         if mode == "T90 (Hours)" and val > 0: k_sec = 2.302585 / (val * 3600)
         elif mode == "Half-Life (Days)" and val > 0: k_sec = 0.693147 / (val * 86400)
