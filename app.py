@@ -7,284 +7,313 @@ from river_core import RiverModel
 st.set_page_config(page_title="River Water Quality Model", layout="wide")
 
 # =============================================================================
-# SIDEBAR: CONFIGURATION & RUN
+# SIDEBAR
 # =============================================================================
-
 st.sidebar.title("Configuration")
-sim_duration = st.sidebar.number_input("Duration (Days)", value=1.0)
-dt = st.sidebar.number_input("Time Step (s)", value=200.0)
-dt_print = st.sidebar.number_input("Print Interval (s)", value=3600.0)
+sim_duration = st.sidebar.number_input("Duration (Days)", 1.0)
+dt = st.sidebar.number_input("Time Step (s)", 200.0)
+dt_print = st.sidebar.number_input("Print Interval (s)", 3600.0)
 st.sidebar.divider()
 time_disc = st.sidebar.selectbox("Discretisation", ["semi", "imp", "exp"])
 advection = st.sidebar.selectbox("Advection", ["Yes", "No"])
-# Reinstated Advection Type Selection
-adv_type = st.sidebar.selectbox("Advection Type", ["QUICK", "Upwind", "Central"])
+adv_type = "QUICK"
+quick_ratio = 0.5
+if advection == "Yes":
+    adv_type = st.sidebar.selectbox("Advection Type", ["QUICK", "Upwind", "Central"])
+    if adv_type == "QUICK":
+        quick_ratio = st.sidebar.number_input("QUICK UP Ratio", value=4.0) # Excel default 4
 diffusion = st.sidebar.selectbox("Diffusion", ["Yes", "No"])
 
 st.sidebar.divider()
 run_btn = st.sidebar.button("Run Simulation", type="primary")
 
 # =============================================================================
-# MAIN TABS
+# MAIN UI
 # =============================================================================
-
 st.title("1D River Water Quality Model")
-
 main_tabs = st.tabs(["River Geometry", "Atmosphere", "Discharges", "Constituents", "Results"])
 
-with main_tabs[0]: # River Geometry
-    st.header("Channel Properties")
+with main_tabs[0]: 
+    st.header("River Geometry & Flow")
     col1, col2 = st.columns(2)
     with col1:
         L = st.number_input("Length (m)", value=12000.0)
         nc = st.number_input("Cells", value=300)
         width = st.number_input("Width (m)", value=100.0)
-    with col2:
         depth = st.number_input("Depth (m)", value=0.5)
+    with col2:
         slope = st.number_input("Slope (m/m)", value=0.0001, format="%.6f")
-        manning = st.number_input("Manning n", value=0.025, format="%.4f")
-    
-    # Real-time calc
+        manning = st.number_input("Manning n (storage only)", value=0.025, format="%.4f")
+        Q_in = st.number_input("Discharge (m³/s)", value=12.515)
+        diff_in = st.number_input("Diffusivity (m²/s)", value=1.0)
+
+    # Calculations
     area = width * depth
     perimeter = width + 2*depth
     rh = area/perimeter if perimeter > 0 else 0
-    vel = (1.0/manning)*(rh**(2/3))*(slope**0.5) if manning > 0 else 0
-    st.success(f"Calculated Velocity: {vel:.4f} m/s | Discharge: {vel*area:.4f} m³/s")
+    vel = Q_in / area if area > 0 else 0
+    sugg_diff = 0.01 + vel * width
+    
+    st.info(f"""
+    **Calculated Properties:**
+    - Flow Velocity: {vel:.4f} m/s
+    - Hydraulic Radius: {rh:.4f} m
+    - Suggested Diffusivity (0.01 + u*W): {sugg_diff:.4f} m²/s
+    """)
 
-with main_tabs[1]: # Atmosphere
-    st.header("Meteo Data")
+with main_tabs[1]:
+    st.header("Atmosphere")
     col1, col2 = st.columns(2)
     with col1:
-        air_temp = st.number_input("Air Temp (°C)", value=20.0)
-        wind = st.number_input("Wind Speed (m/s)", value=0.0)
-        humidity = st.number_input("Humidity (%)", value=80.0)
+        air_temp = st.number_input("Air Temp (°C)", 20.0)
+        wind = st.number_input("Wind Speed (m/s)", 0.0)
+        humidity = st.number_input("Humidity (%)", 80.0)
+        h_min = st.number_input("h_min", 6.9)
+        sky_temp = st.number_input("Sky Temp (°C) (-40=Calc)", -40.0)
     with col2:
-        solar = st.number_input("Solar Const. (W/m²)", value=1370.0)
-        cloud = st.number_input("Cloud Cover (%)", value=0.0)
-        lat = st.number_input("Latitude", value=38.0)
+        solar = st.number_input("Solar Constant (W/m²)", 1370.0)
+        cloud = st.number_input("Cloud Cover (%)", 0.0)
+        lat = st.number_input("Latitude", 38.0)
+        sunrise = st.number_input("Sunrise (h)", 6.0)
+        sunset = st.number_input("Sunset (h)", 18.0)
+        
+    st.markdown("### Physical Constants (Read-Only)")
+    st.dataframe(pd.DataFrame({
+        "Parameter": ["O2 Partial Pressure", "CO2 Partial Pressure", "MW O2", "MW CO2"],
+        "Value": [0.2095, 0.000395, 32000, 44000],
+        "Unit": ["bar", "bar", "mg/mol", "mg/mol"]
+    }), hide_index=True)
+
+with main_tabs[2]:
+    st.header("Discharges")
+    st.caption("Enter Cell OR Distance. Distance takes priority if changed (logic implied).")
     
-    c1, c2 = st.columns(2)
-    sunrise = c1.number_input("Sunrise (h)", value=6.0)
-    sunset = c2.number_input("Sunset (h)", value=18.0)
-
-with main_tabs[2]: # Discharges
-    st.header("Discharges Configuration")
-    def_data = pd.DataFrame({
-        "Cell": [1, 60, 100, 140],
-        "Flow (m3/s)": [0.0, 0.0, 0.0, 0.0],
-        "Temp (C)": [30.0, 30.0, 50.0, 50.0],
-        "BOD (mg/L)": [100.0, 100.0, 200.0, 200.0],
-        "DO (mg/L)": [0.0, 0.0, 0.0, 0.0],
-        "CO2 (mg/L)": [1.0, 1.0, 1.0, 1.0],
-        "Generic": [100000.0, 100000.0, 100000.0, 100000.0]
-    })
-    edited_discharges = st.data_editor(def_data, num_rows="dynamic")
-
-with main_tabs[3]: # Constituents
-    st.header("Constituents Parameters")
+    # Init data
+    if 'dis_df' not in st.session_state:
+        st.session_state['dis_df'] = pd.DataFrame({
+            "Cell": [1, 60],
+            "Distance (m)": [20.0, 2400.0],
+            "Flow (m3/s)": [0.0, 0.0],
+            "Temp (C)": [30.0, 30.0],
+            "BOD": [100.0, 100.0],
+            "DO": [0.0, 0.0],
+            "CO2": [1.0, 1.0],
+            "Generic": [100000.0, 100000.0]
+        })
     
-    c_subtabs = st.tabs(["Temperature", "DO", "BOD", "CO2", "Generic"])
-    constituents_config = {}
+    edited = st.data_editor(st.session_state['dis_df'], num_rows="dynamic")
+    
+    # Sync Logic (Approximate for UI speed)
+    # In a real app, use on_change callback. Here we update for next run.
+    # We will assume "Cell" is the driver for the engine.
+    dx = L / nc if nc > 0 else 1
+    # Update Dist column for display based on Cell
+    edited["Distance (m)"] = (edited["Cell"] - 0.5) * dx
+    st.session_state['dis_df'] = edited
 
-    def render_constituent_tab(key, def_active, def_val, unit, is_generic=False):
-        # 1. Active & Global Default
-        col_a, col_b = st.columns(2)
-        active = col_a.selectbox(f"Active?", ["Yes", "No"], index=0 if def_active else 1, key=f"{key}_act")
+with main_tabs[3]:
+    st.header("Constituents")
+    c_tabs = st.tabs(["Temperature", "DO", "BOD", "CO2", "Generic"])
+    configs = {}
+    
+    def common_inputs(key, unit, def_val):
+        c1, c2 = st.columns(2)
+        act = c1.selectbox(f"{key} Active", ["Yes", "No"], key=f"{key}_act")
+        val = c2.number_input(f"Default {unit}", value=def_val, key=f"{key}_def")
         
-        # 2. Boundary Conditions
-        st.markdown("##### Boundary Conditions")
-        bc_c1, bc_c2 = st.columns(2)
-        with bc_c1:
-            st.markdown("**Left Boundary (Inflow)**")
-            bc_left_type = st.selectbox("Type", ["Fixed Value", "Zero Gradient"], key=f"{key}_bc_l_type")
-            bc_left_val = st.number_input(f"Value ({unit})", value=def_val, key=f"{key}_bc_l_val")
-        with bc_c2:
-            st.markdown("**Right Boundary (Outflow)**")
-            bc_right_type = st.selectbox("Type", ["Zero Gradient", "Fixed Value"], key=f"{key}_bc_r_type")
-            bc_right_val = st.number_input(f"Value ({unit})", value=def_val, key=f"{key}_bc_r_val")
-
-        # 3. Initial Conditions Mode
-        st.markdown("##### Initial Conditions")
-        ic_mode = st.radio("Initialization Mode", ["Default", "Cell List", "Interval"], horizontal=True, key=f"{key}_ic_mode")
+        c3, c4 = st.columns(2)
+        min_v = c3.number_input(f"Min {unit}", value=-1000.0 if key=="Temperature" else 0.0, key=f"{key}_min")
+        max_v = c4.number_input(f"Max {unit}", value=1000.0, key=f"{key}_max")
         
-        init_cells = []
-        init_intervals = []
-        default_ic = def_val
+        st.caption("Boundary Conditions")
+        b1, b2 = st.columns(2)
+        b_l_t = b1.selectbox("Left BC", ["Fixed", "ZeroGrad", "Cyclic"], key=f"{key}_bcl")
+        b_l_v = b1.number_input("Left Val", value=def_val, key=f"{key}_bclv")
+        b_r_t = b2.selectbox("Right BC", ["ZeroGrad", "Fixed", "Cyclic"], key=f"{key}_bcr")
+        b_r_v = b2.number_input("Right Val", value=def_val, key=f"{key}_bcrv")
         
-        if ic_mode == "Default":
-            default_ic = st.number_input(f"Global Initial Value ({unit})", value=def_val, key=f"{key}_ic_def")
-        elif ic_mode == "Cell List":
-            st.caption("Define value per cell index.")
-            df_cell = pd.DataFrame(columns=["Cell Index", f"Value ({unit})"])
-            if key == "Temperature": df_cell = pd.DataFrame([[150, 25.0]], columns=["Cell Index", f"Value ({unit})"]) 
-            ed_cell = st.data_editor(df_cell, num_rows="dynamic", key=f"{key}_ic_cell")
-            for _, row in ed_cell.iterrows():
-                try: init_cells.append({"idx": int(row[0]), "val": float(row[1])})
-                except: pass
-        elif ic_mode == "Interval":
-            st.caption("Define value for spatial ranges.")
-            df_int = pd.DataFrame(columns=["Start Dist (m)", "End Dist (m)", f"Value ({unit})"])
-            if key == "Temperature": df_int = pd.DataFrame([[0.0, 2000.0, 18.0]], columns=["Start Dist (m)", "End Dist (m)", f"Value ({unit})"])
-            ed_int = st.data_editor(df_int, num_rows="dynamic", key=f"{key}_ic_int")
-            for _, row in ed_int.iterrows():
-                try: init_intervals.append({"start": float(row[0]), "end": float(row[1]), "val": float(row[2])})
-                except: pass
+        st.caption("Initial Conditions (Exceptions)")
+        df_ic = pd.DataFrame(columns=["Type", "Start/Idx", "End", "Value"])
+        if key == "Temperature": 
+             df_ic = pd.DataFrame([["Interval", 0, 1000, 18.0]], columns=["Type", "Start/Idx", "End", "Value"])
+        df_ic_ed = st.data_editor(df_ic, num_rows="dynamic", key=f"{key}_ic_ed")
         
-        # 4. Kinetics (Generic Only)
-        k_val = 0.0
-        if is_generic:
-            st.markdown("##### Kinetics")
-            k_mode = st.selectbox("Decay Model", ["T90 (Bacteria)", "First Order Decay (k)"], key="gen_k_mode")
-            if k_mode == "T90 (Bacteria)":
-                t90 = st.number_input("T90 (Hours)", value=10.0, key="gen_t90")
-                if t90 > 0: k_val = 2.302585 / (t90 * 3600.0)
-            else:
-                k_day = st.number_input("Decay Rate k (1/day)", value=0.5, key="gen_k")
-                k_val = k_day / 86400.0
-
         return {
-            "active": active == "Yes",
-            "unit": unit,
-            "init_mode": ic_mode, 
-            "default_val": default_ic,
-            "init_cells": init_cells,
-            "init_intervals": init_intervals,
-            "bc_left_type": "Fixed" if bc_left_type == "Fixed Value" else "ZeroGrad",
-            "bc_left_val": bc_left_val,
-            "bc_right_type": "Fixed" if bc_right_type == "Fixed Value" else "ZeroGrad",
-            "bc_right_val": bc_right_val,
-            "k_decay": k_val
+            "active": act=="Yes", "unit": unit, "def": val, "min": min_v, "max": max_v,
+            "bclt": b_l_t, "bclv": b_l_v, "bcrt": b_r_t, "bcrv": b_r_v,
+            "ic_table": df_ic_ed
         }
 
-    with c_subtabs[0]:
-        constituents_config["Temperature"] = render_constituent_tab("Temperature", True, 15.0, "ºC")
-    with c_subtabs[1]:
-        constituents_config["DO"] = render_constituent_tab("DO", True, 8.0, "mg/L")
-    with c_subtabs[2]:
-        constituents_config["BOD"] = render_constituent_tab("BOD", True, 5.0, "mg/L")
-    with c_subtabs[3]:
-        constituents_config["CO2"] = render_constituent_tab("CO2", True, 0.7, "mg/L")
-    with c_subtabs[4]:
-        constituents_config["Generic"] = render_constituent_tab("Generic", True, 0.0, "conc", is_generic=True)
+    with c_tabs[0]: # Temp
+        cfg = common_inputs("Temperature", "ºC", 15.0)
+        st.caption("Fluxes")
+        c1, c2, c3, c4 = st.columns(4)
+        use_surf = c1.checkbox("Surface Flux", True)
+        use_sens = c2.checkbox("Sensible", True)
+        use_lat = c3.checkbox("Latent", True)
+        use_rad = c4.checkbox("Radiative", True)
+        cfg.update({"surf": use_surf, "sens": use_sens, "lat": use_lat, "rad": use_rad})
+        configs["Temperature"] = cfg
 
-with main_tabs[4]: # Results
-    st.header("Simulation Results")
-    if 'results' not in st.session_state:
-        st.info("Run the simulation to see results here.")
-    else:
-        res = st.session_state['results']
-        xc = st.session_state['grid']
-        times = res['times']
+    with c_tabs[1]: # DO
+        cfg = common_inputs("DO", "mg/L", 8.0)
+        use_flux = st.checkbox("Include Air-Water Exchange", True, key="do_flux")
+        cfg["surf"] = use_flux
+        configs["DO"] = cfg
+
+    with c_tabs[2]: # BOD
+        cfg = common_inputs("BOD", "mg/L", 5.0)
+        st.caption("Kinetics")
+        c1, c2 = st.columns(2)
+        use_log = c1.checkbox("Use Logistic Formulation", False)
+        use_ana = c2.checkbox("Consider Anaerobic", False)
         
-        r_tabs = st.tabs(["Spatial Profiles", "Time Series", "Table Data"])
+        k_decay = st.number_input("Decay Rate (1/day)", 0.3)
+        half_sat = st.number_input("O2 Semi-Sat Conc (mg/L)", 0.5)
         
-        with r_tabs[0]:
-            st.caption("Distribution along the river at a specific time.")
-            if len(times) > 0:
-                time_idx = st.slider("Time Selector (Days)", 0, len(times)-1, len(times)-1)
-                t_display = times[time_idx]
-                
-                # Separate Graphs per active constituent
-                for name, cfg in constituents_config.items():
-                    if cfg["active"] and name in res and len(res[name]) > 0:
-                        fig, ax = plt.subplots(figsize=(8, 4))
-                        ax.plot(xc, res[name][time_idx], label=name)
-                        ax.set_title(f"{name} Profile at T = {t_display:.3f} days")
-                        ax.set_xlabel("Distance (m)")
-                        ax.set_ylabel(f"{name} ({cfg['unit']})")
-                        ax.legend()
-                        ax.grid(True, alpha=0.3)
-                        st.pyplot(fig)
-                
-        with r_tabs[1]:
-            st.caption("Evolution over time at a specific location.")
-            if len(xc) > 0:
-                loc_opts = [f"{x:.1f} m" for x in xc]
-                sel_loc = st.selectbox("Location Selector", loc_opts)
-                loc_idx = loc_opts.index(sel_loc)
-                
-                for name, cfg in constituents_config.items():
-                    if cfg["active"] and name in res and len(res[name]) > 0:
-                        fig2, ax2 = plt.subplots(figsize=(8, 4))
-                        ts = [step[loc_idx] for step in res[name]]
-                        ax2.plot(times, ts, label=name, color='green')
-                        ax2.set_title(f"{name} Time Series at X = {xc[loc_idx]:.1f} m")
-                        ax2.set_xlabel("Time (Days)")
-                        ax2.set_ylabel(f"{name} ({cfg['unit']})")
-                        ax2.legend()
-                        ax2.grid(True, alpha=0.3)
-                        st.pyplot(fig2)
-                
-        with r_tabs[2]:
-            st.write("Export Data")
-            for name, cfg in constituents_config.items():
-                if cfg["active"] and name in res and len(res[name]) > 0:
-                    with st.expander(f"{name} Data Table"):
-                        df_res = pd.DataFrame(res[name], index=np.round(times, 3), columns=np.round(xc, 1))
-                        st.write(f"Rows=Time (Days), Cols=Distance (m)")
-                        st.dataframe(df_res)
+        k_grow = 0.0
+        max_log = 0.0
+        if use_log:
+            k_grow = st.number_input("Logistic Growth Rate", 0.5)
+            max_log = st.number_input("Max Val Logistic", 50.0)
+            
+        cfg.update({"log": use_log, "ana": use_ana, "k_dec": k_decay, "k_gro": k_grow, "max_log": max_log, "half": half_sat})
+        configs["BOD"] = cfg
+
+    with c_tabs[3]: # CO2
+        cfg = common_inputs("CO2", "mg/L", 0.7)
+        use_flux = st.checkbox("Include Air-Water Exchange", True, key="co2_flux")
+        cfg["surf"] = use_flux
+        configs["CO2"] = cfg
+
+    with c_tabs[4]: # Generic
+        unit_gen = st.text_input("Unit", "UFC/100ml")
+        cfg = common_inputs("Generic", unit_gen, 0.0)
+        mode = st.selectbox("Decay Model", ["T90 (Hours)", "Half-Life (Days)", "T-Duplicate (Days)", "Rate (1/day)"])
+        val = st.number_input("Parameter Value", 10.0)
+        
+        # Convert to k (1/sec)
+        k_sec = 0.0
+        if mode == "T90 (Hours)" and val > 0: k_sec = 2.302585 / (val * 3600)
+        elif mode == "Half-Life (Days)" and val > 0: k_sec = 0.693147 / (val * 86400)
+        elif mode == "T-Duplicate (Days)" and val > 0: k_sec = -0.693147 / (val * 86400) # Negative for growth? Or positive growth? Usually duplicate = growth.
+        elif mode == "Rate (1/day)": k_sec = val / 86400
+        
+        cfg["k"] = k_sec
+        configs["Generic"] = cfg
 
 # =============================================================================
-# RUN LOGIC
+# RUN
 # =============================================================================
-
 if run_btn:
     model = RiverModel()
-    
-    with st.spinner("Simulating..."):
-        # 1. Setup Grid & Atmos
-        model.setup_grid(L, int(nc), width, depth, slope, manning)
-        model.setup_atmos(air_temp, wind, humidity, solar, lat, cloud, sunrise, sunset)
+    with st.spinner("Calculating..."):
+        # Setup Grid
+        model.setup_grid(L, int(nc), width, depth, slope, manning, Q_in, diff_in)
         
-        # 2. Config options
+        # Setup Atmos
+        # Handle sky temp logic (-40 input means calc)
+        sky_t_val = sky_temp
+        sky_imp = True
+        if sky_temp == -40: 
+            sky_t_val = -40
+            sky_imp = False
+            
+        model.setup_atmos(air_temp, wind, humidity, solar, lat, cloud, sunrise, sunset, h_min, sky_t_val, sky_imp)
+        
+        # Config
         model.config.duration_days = sim_duration
         model.config.dt = dt
         model.config.dt_print = dt_print
         model.config.time_discretisation = time_disc
-        model.config.advection_active = (advection == "Yes")
-        # Pass the advection type from sidebar
-        model.config.advection_type = adv_type 
-        model.config.diffusion_active = (diffusion == "Yes")
+        model.config.advection_active = (advection=="Yes")
+        model.config.advection_type = adv_type
+        model.config.quick_up_ratio = quick_ratio
+        model.config.diffusion_active = (diffusion=="Yes")
         
-        # 3. Discharges
-        dis_list = []
-        for idx, row in edited_discharges.iterrows():
-            try:
-                dis_list.append({
-                    "cell": int(row["Cell"]) - 1, 
-                    "flow": float(row["Flow (m3/s)"]),
-                    "temp": float(row["Temp (C)"]),
-                    "bod": float(row["BOD (mg/L)"]),
-                    "do": float(row["DO (mg/L)"]),
-                    "co2": float(row["CO2 (mg/L)"]),
-                    "generic": float(row["Generic"])
-                })
-            except: pass
-        model.set_discharges(dis_list)
+        # Discharges
+        d_list = []
+        for _, r in st.session_state['dis_df'].iterrows():
+            d_list.append({
+                "cell": int(r["Cell"])-1, "flow": r["Flow (m3/s)"],
+                "temp": r["Temp (C)"], "bod": r["BOD"], "do": r["DO"],
+                "co2": r["CO2"], "generic": r["Generic"]
+            })
+        model.set_discharges(d_list)
         
-        # 4. Constituents
-        for name, cfg in constituents_config.items():
+        # Constituents
+        for name, c in configs.items():
+            # Parse Init table
+            i_cells = []
+            i_ints = []
+            if not c["ic_table"].empty:
+                for _, r in c["ic_table"].iterrows():
+                    try:
+                        if r["Type"] == "Cell": i_cells.append({"idx": int(r["Start/Idx"]), "val": float(r["Value"])})
+                        elif r["Type"] == "Interval": i_ints.append({"start": float(r["Start/Idx"]), "end": float(r["End"]), "val": float(r["Value"])})
+                    except: pass
+            
+            # Add to model
+            # Map specific params
+            k_d = c.get("k_dec", 0.0)
+            if name == "Generic": k_d = c.get("k", 0.0)
+            
             model.add_constituent(
-                name=name,
-                active=cfg["active"],
-                unit=cfg["unit"],
-                init_mode=cfg["init_mode"],
-                default_val=cfg["default_val"],
-                init_cells=cfg["init_cells"],
-                init_intervals=cfg["init_intervals"],
-                bc_left_type=cfg["bc_left_type"],
-                bc_left_val=cfg["bc_left_val"],
-                bc_right_type=cfg["bc_right_type"],
-                bc_right_val=cfg["bc_right_val"],
-                k_decay=cfg["k_decay"]
+                name=name, active=c["active"], unit=c["unit"],
+                default_val=c["def"], min_val=c["min"], max_val=c["max"],
+                init_mode="Mixed", init_cells=i_cells, init_intervals=i_ints,
+                bc_left_type=c["bclt"], bc_left_val=c["bclv"],
+                bc_right_type=c["bcrt"], bc_right_val=c["bcrv"],
+                use_surface_flux=c.get("surf", False),
+                use_sensible=c.get("sens", False),
+                use_latent=c.get("lat", False),
+                use_radiative=c.get("rad", False),
+                k_decay=k_d,
+                k_growth=c.get("k_gro", 0.0),
+                max_logistic=c.get("max_log", 0.0),
+                use_logistic=c.get("log", False),
+                use_anaerobic=c.get("ana", False),
+                o2_half_sat=c.get("half", 0.0)
             )
             
-        # 5. Execute
-        try:
-            results = model.run()
-            st.session_state['results'] = results
-            st.session_state['grid'] = model.grid.xc
-            st.toast("Simulation Finished Successfully!", icon="✅")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Simulation Error: {e}")
+        res = model.run()
+        st.session_state['results'] = res
+        st.session_state['grid'] = model.grid.xc
+        st.success("Simulation Complete")
+        st.rerun()
+
+# =============================================================================
+# RESULTS
+# =============================================================================
+with main_tabs[4]:
+    if 'results' in st.session_state:
+        res = st.session_state['results']
+        xc = st.session_state['grid']
+        times = res['times']
+        
+        tab1, tab2 = st.tabs(["Profiles", "Time Series"])
+        
+        with tab1:
+            t_idx = st.slider("Time (Days)", 0, len(times)-1, len(times)-1)
+            t_val = times[t_idx]
+            for name in configs.keys():
+                if name in res and len(res[name]) > 0:
+                    fig, ax = plt.subplots(figsize=(8,3))
+                    ax.plot(xc, res[name][t_idx])
+                    ax.set_title(f"{name} at T={t_val:.3f}d")
+                    ax.set_xlabel("Distance (m)")
+                    ax.grid(True, alpha=0.3)
+                    st.pyplot(fig)
+                    
+        with tab2:
+            x_sel = st.selectbox("Location", xc)
+            x_idx = np.argmin(np.abs(xc - x_sel))
+            for name in configs.keys():
+                if name in res and len(res[name]) > 0:
+                    fig, ax = plt.subplots(figsize=(8,3))
+                    ts = [step[x_idx] for step in res[name]]
+                    ax.plot(times, ts)
+                    ax.set_title(f"{name} at X={x_sel:.1f}m")
+                    ax.set_xlabel("Time (Days)")
+                    ax.grid(True, alpha=0.3)
+                    st.pyplot(fig)
