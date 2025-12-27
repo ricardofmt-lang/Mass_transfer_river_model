@@ -52,7 +52,7 @@ HenryConstants:,Temperature,O2,CO2,Units,,
 ,10,0.0016963,0.05327,M/atm,,
 ,15,0.0015236,0.045463,M/atm,,
 ,20,0.001384,0.039172,M/atm,,
-,25,0.001263,0.033363,M/atm,,""",
+,25,0.001263,0.033363,M/atm,,\n""",
 
     "Discharges": """DischargeNumbers:,1,2,3,4,,
 DischargeNames:,Descarga 1,Descarga2,Descarga3,Descarga4,,
