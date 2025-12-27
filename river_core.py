@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import math
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
 
 # =============================================================================
 # DATA STRUCTURES
@@ -52,9 +52,13 @@ class Constituent:
     unit: str
     values: np.ndarray
     old_values: np.ndarray
-    boundary_left: float = 0.0  # Dirichlet BC at x=0
-    # Specific params
-    k_decay: float = 0.0      # For Generic (from T90) or BOD
+    # Boundary Conditions
+    bc_left_type: str = "Fixed" # Fixed, ZeroGrad, Cyclic
+    bc_left_val: float = 0.0
+    bc_right_type: str = "ZeroGrad"
+    bc_right_val: float = 0.0
+    # Kinetics
+    k_decay: float = 0.0      
     reaeration_rate: float = 0.0 
 
 @dataclass
@@ -124,27 +128,29 @@ class RiverModel:
         self.atmos.henry_table_o2 = np.array([0.00218, 0.00191, 0.00170, 0.00152, 0.00138, 0.00126, 0.00116])
         self.atmos.henry_table_co2 = np.array([0.0764, 0.0635, 0.0533, 0.0455, 0.0392, 0.0334, 0.0299])
 
-    def add_constituent(self, name, active, unit, default_val, left_boundary_val, t90=0.0, special_inits=None):
-        """
-        Adds a constituent to the simulation.
-        special_inits: List of dicts {'start_x': float, 'end_x': float, 'value': float}
-        """
+    def add_constituent(self, name, active, unit, 
+                        init_mode="Default", default_val=0.0, 
+                        init_cells=None, init_intervals=None,
+                        bc_left_type="Fixed", bc_left_val=0.0,
+                        bc_right_type="ZeroGrad", bc_right_val=0.0,
+                        k_decay=0.0):
+        
+        # 1. Initialize Array
         vals = np.full(self.grid.nc, default_val)
         
-        # Apply special initial conditions (Intervals)
-        if special_inits:
-            for item in special_inits:
-                x1 = item['start_x']
-                x2 = item['end_x']
-                v = item['value']
+        # 2. Apply IC Mode
+        if init_mode == "Cell" and init_cells is not None:
+            # init_cells list of {idx, val}
+            for item in init_cells:
+                idx = item['idx']
+                if 0 <= idx < self.grid.nc:
+                    vals[idx] = item['val']
+        elif init_mode == "Interval" and init_intervals is not None:
+            # init_intervals list of {start, end, val}
+            for item in init_intervals:
+                x1, x2, v = item['start'], item['end'], item['val']
                 mask = (self.grid.xc >= x1) & (self.grid.xc <= x2)
                 vals[mask] = v
-
-        # Calculate decay k for Generic if T90 provided (T90 in hours -> k in 1/s)
-        # k = 2.3026 / (T90 * 3600)
-        k = 0.0
-        if name == "Generic" and t90 > 0:
-            k = 2.302585 / (t90 * 3600.0)
 
         c = Constituent(
             name=name,
@@ -152,19 +158,18 @@ class RiverModel:
             unit=unit,
             values=vals,
             old_values=vals.copy(),
-            boundary_left=left_boundary_val,
-            k_decay=k
+            bc_left_type=bc_left_type,
+            bc_left_val=bc_left_val,
+            bc_right_type=bc_right_type,
+            bc_right_val=bc_right_val,
+            k_decay=k_decay
         )
         self.constituents[name] = c
         self.results[name] = []
 
     def set_discharges(self, discharge_list):
-        """
-        discharge_list: List of dicts with keys: cell, flow, temp, bod, do, co2, generic
-        """
         self.discharges = []
         for d in discharge_list:
-            # Ensure 0-based index
             if "cell" in d and d["cell"] >= 0 and d["cell"] < self.grid.nc:
                 self.discharges.append(d)
 
@@ -189,7 +194,6 @@ class RiverModel:
         T_w_k = water_temp + kelvin
         T_a_k = self.atmos.air_temp + kelvin
         
-        # Solar
         hour = (time_sec / 3600.0) % 24
         Q_sn = 0.0
         if self.atmos.sunrise_hour < hour < self.atmos.sunset_hour:
@@ -224,16 +228,13 @@ class RiverModel:
             if q <= 0: continue
             rate = q / vol_cell
             
-            # Heat
             if "Temperature" in self.constituents:
                 T_c = self.constituents["Temperature"].values[idx]
                 self.constituents["Temperature"].values[idx] += rate * (d["temp"] - T_c) * dt_split
-            
-            # Others
+                
             for name in ["BOD", "DO", "CO2", "Generic"]:
                 if name in self.constituents:
                     C_c = self.constituents[name].values[idx]
-                    # Map dict keys to names
                     key = name.lower() 
                     val_in = d.get(key, 0.0)
                     self.constituents[name].values[idx] += rate * (val_in - C_c) * dt_split
@@ -247,51 +248,77 @@ class RiverModel:
         for name, prop in self.constituents.items():
             if not prop.active: continue
             C = prop.values
-            C_new = np.zeros_like(C)
             
-            # Arrays for TDMA
+            # TDMA Arrays
             a = np.zeros(nc)
             b = np.zeros(nc)
-            c_diag = np.zeros(nc) # 'c' of the diag, not speed
+            c_diag = np.zeros(nc)
             d_rhs = np.zeros(nc)
             
             theta = 0.5 if self.config.time_discretisation == "semi" else 1.0
-            if self.config.time_discretisation == "exp": theta = 0.0 # Not fully implemented for exp
-            
-            # Coefficients
             alpha = u * dt / (2*dx)
             gamma = D * dt / (dx**2)
             
-            for i in range(nc):
-                if i == 0: 
-                    # Left Boundary: Fixed Value (Dirichlet)
-                    b[i] = 1.0
-                    d_rhs[i] = prop.boundary_left
-                elif i == nc - 1:
-                    # Right Boundary: Zero Gradient (Neumann) -> C_N - C_N-1 = 0
-                    a[i] = -1.0
-                    b[i] = 1.0
-                    d_rhs[i] = 0.0
-                else:
-                    # Internal Nodes (Central Difference)
-                    a[i] = theta * (-alpha - gamma)
-                    b[i] = 1 + theta * (2*gamma)
-                    c_diag[i] = theta * (alpha - gamma)
-                    
-                    # Explicit Part (RHS)
-                    adv_ex = -u * (C[i+1] - C[i-1]) / (2*dx)
-                    diff_ex = D * (C[i+1] - 2*C[i] + C[i-1]) / (dx**2)
-                    d_rhs[i] = C[i] + (1-theta) * dt * (adv_ex + diff_ex)
+            # --- LEFT BOUNDARY (i=0) ---
+            if prop.bc_left_type == "Fixed":
+                # C[0] = Val
+                b[0] = 1.0
+                d_rhs[0] = prop.bc_left_val
+            elif prop.bc_left_type == "ZeroGrad":
+                # C[0] - C[1] = 0
+                b[0] = 1.0
+                c_diag[0] = -1.0
+                d_rhs[0] = 0.0
+                
+            # --- RIGHT BOUNDARY (i=nc-1) ---
+            if prop.bc_right_type == "Fixed":
+                # C[N] = Val
+                b[nc-1] = 1.0
+                d_rhs[nc-1] = prop.bc_right_val
+            elif prop.bc_right_type == "ZeroGrad":
+                # C[N] - C[N-1] = 0
+                a[nc-1] = -1.0
+                b[nc-1] = 1.0
+                d_rhs[nc-1] = 0.0
             
-            # TDMA Solver
+            # --- INTERNAL NODES ---
+            for i in range(1, nc-1):
+                # Central Differences Crank-Nicolson
+                a[i] = theta * (-alpha - gamma)
+                b[i] = 1 + theta * (2*gamma)
+                c_diag[i] = theta * (alpha - gamma)
+                
+                # Explicit Part (n)
+                adv_ex = -u * (C[i+1] - C[i-1]) / (2*dx)
+                diff_ex = D * (C[i+1] - 2*C[i] + C[i-1]) / (dx**2)
+                d_rhs[i] = C[i] + (1-theta) * dt * (adv_ex + diff_ex)
+            
+            # --- TDMA SOLVER ---
+            C_new = np.zeros(nc)
+            # Forward Elimination
+            # We start from 1 because 0 is the start of the tridiagonal system
+            # But specific BC handling might require careful indexing.
+            # Standard TDMA: b[i]x[i] + c[i]x[i+1] + a[i]x[i-1] = d[i]
+            
+            # Since we modified b[0] and c_diag[0], we can proceed standard way
+            c_prime = np.zeros(nc)
+            d_prime = np.zeros(nc)
+            
+            # i=0
+            c_prime[0] = c_diag[0] / b[0]
+            d_prime[0] = d_rhs[0] / b[0]
+            
             for i in range(1, nc):
-                m = a[i] / b[i-1]
-                b[i] -= m * c_diag[i-1]
-                d_rhs[i] -= m * d_rhs[i-1]
-            C_new[nc-1] = d_rhs[nc-1] / b[nc-1]
+                temp = b[i] - a[i] * c_prime[i-1]
+                if temp == 0: temp = 1e-10 # Avoid zero division
+                c_prime[i] = c_diag[i] / temp
+                d_prime[i] = (d_rhs[i] - a[i] * d_prime[i-1]) / temp
+                
+            # Back Substitution
+            C_new[nc-1] = d_prime[nc-1]
             for i in range(nc-2, -1, -1):
-                C_new[i] = (d_rhs[i] - c_diag[i] * C_new[i+1]) / b[i]
-            
+                C_new[i] = d_prime[i] - c_prime[i] * C_new[i+1]
+                
             prop.values = C_new
 
     def apply_kinetics(self, dt):
@@ -301,20 +328,17 @@ class RiverModel:
         co2 = self.constituents["CO2"].values if "CO2" in self.constituents else None
         generic = self.constituents["Generic"].values if "Generic" in self.constituents else None
         
-        # 1. Temperature Source
         if "Temperature" in self.constituents:
             for i in range(self.grid.nc):
                 self.constituents["Temperature"].values[i] += self.calculate_heat_fluxes(temp[i], self.current_time) * dt
 
-        # 2. Generic Decay (E. coli)
+        # Generic Decay (First Order)
         if generic is not None:
             k = self.constituents["Generic"].k_decay
             if k > 0:
                 for i in range(self.grid.nc):
-                    # dC/dt = -kC
                     generic[i] -= k * generic[i] * dt
 
-        # 3. BOD & DO Coupling
         if bod is not None and do is not None:
             k1_20 = 0.3
             for i in range(self.grid.nc):
@@ -323,11 +347,9 @@ class RiverModel:
                 bod[i] -= dL
                 do[i] -= dL
                 if co2 is not None: co2[i] += dL * (44.0/32.0)
-        
-        # 4. Reaeration
+                
         if do is not None:
             for i in range(self.grid.nc):
-                # O'Connor Dobbins
                 k2 = 3.93 * (self.flow.velocity**0.5 / self.grid.water_depth**1.5) * (1.024**(temp[i] - 20)) / 86400.0
                 cs = self.calculate_saturation(temp[i], "O2")
                 do[i] += k2 * (cs - do[i]) * dt
