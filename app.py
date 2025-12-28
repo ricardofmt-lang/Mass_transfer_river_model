@@ -139,8 +139,6 @@ with main_tabs[3]:
         st.markdown("##### Boundary Conditions")
         is_temp = (key == "Temperature")
         
-        # Determine options based on constituent
-        # Temp has Cyclic, others have Fixed/ZeroGrad
         if is_temp:
             is_cyclic = st.checkbox("Cyclic Boundary (Inflow=Outflow)?", value=False, key=f"{key}_cyclic")
         else:
@@ -150,7 +148,7 @@ with main_tabs[3]:
         b_l_v, b_r_v = 0.0, 0.0
         
         if is_cyclic:
-            bc_l_type = "Cyclic" # Marker
+            bc_l_type = "Cyclic"
             bc_r_type = "Cyclic"
         else:
             b1, b2 = st.columns(2)
