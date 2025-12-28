@@ -62,7 +62,7 @@ class Constituent:
     bc_right_type: str = "ZeroGrad"
     bc_right_val: float = 0.0
     
-    # Toggles
+    # Flux Toggles
     use_surface_flux: bool = True     
     use_sensible_heat: bool = True    
     use_latent_heat: bool = True      
@@ -115,6 +115,7 @@ class RiverModel:
         
         self.flow.discharge = discharge
         self.flow.diffusivity = diffusivity
+        # If area is 0, avoid div zero
         self.flow.velocity = discharge / self.grid.area_vertical if self.grid.area_vertical > 0 else 0.0
 
     def setup_atmos(self, temp, wind, humidity, solar, lat, cloud, sunrise, sunset, h_min, sky_temp, sky_imposed):
@@ -136,6 +137,7 @@ class RiverModel:
                         bc_left_type="Fixed", bc_left_val=0.0,
                         bc_right_type="ZeroGrad", bc_right_val=0.0,
                         min_val=-1e9, max_val=1e9,
+                        # Specific flags
                         use_surface_flux=True, use_sensible=True, use_latent=True, use_radiative=True,
                         k_decay=0.0, k_growth=0.0, max_logistic=0.0, use_logistic=False, 
                         use_anaerobic=False, o2_half_sat=0.0):
@@ -190,84 +192,42 @@ class RiverModel:
         mw = 32000.0 if gas_type == "O2" else 44000.0
         return (p_atm * kh) * mw / 1000.0
 
-    def calculate_solar_radiation(self, time_sec):
-        # VBA-style Solar calculation based on Lat/Time
-        # Convert time to Day of Year
-        day_of_year = int((time_sec / 86400.0) % 365) + 1
-        hour = (time_sec / 3600.0) % 24
-        
-        phi = math.radians(self.atmos.latitude)
-        # Declination (Cooper 1969)
-        delta = 0.409 * math.sin(2 * math.pi / 365.0 * (284 + day_of_year))
-        
-        # Hour angle
-        omega = (math.pi / 12.0) * (hour - 12.0)
-        
-        # Solar Altitude sin(alpha)
-        sin_alpha = math.sin(phi) * math.sin(delta) + math.cos(phi) * math.cos(delta) * math.cos(omega)
-        
-        if sin_alpha <= 0:
-            return 0.0
-        
-        # Attenuation by Cloud Cover
-        # I_0 approx 1370 * eccentricity? Using constant here as per config
-        I_0 = self.atmos.solar_constant
-        
-        # Cloud attenuation factor (approximate VBA logic)
-        # Q = I0 * sin(alpha) * (1 - 0.65 * C^2)
-        Q_s = I_0 * sin_alpha * (1.0 - 0.65 * (self.atmos.cloud_cover/100.0)**2)
-        return max(0.0, Q_s)
-
     def calculate_heat_fluxes(self, water_temp, time_sec):
         sigma = 5.67e-8
         kelvin = 273.15
         T_w_k = water_temp + kelvin
         T_a_k = self.atmos.air_temp + kelvin
         
-        # 1. Solar (Shortwave)
-        Q_sn = self.calculate_solar_radiation(time_sec)
-        # Assuming 0.9 absorption coefficient
-        Q_solar_absorbed = 0.9 * Q_sn
+        Q_sn, Q_an, Q_br, Q_h, Q_e = 0.0, 0.0, 0.0, 0.0, 0.0
         
-        # 2. Atmospheric (Longwave Down)
-        # VBA uses Stefan Boltzmann
+        # Solar
+        hour = (time_sec / 3600.0) % 24
+        if self.atmos.sunrise_hour < hour < self.atmos.sunset_hour:
+            day_len = self.atmos.sunset_hour - self.atmos.sunrise_hour
+            norm_time = (hour - self.atmos.sunrise_hour) / day_len
+            Q_max = self.atmos.solar_constant * (1 - 0.65 * (self.atmos.cloud_cover/100)**2)
+            Q_sn = Q_max * math.sin(math.pi * norm_time)
+        
+        # Atmos
         if self.atmos.sky_temp_imposed:
             T_sky = self.atmos.sky_temp + kelvin
         else:
-            # Swinbank
             T_sky = 0.0552 * (T_a_k**1.5)
         Q_an = 0.97 * sigma * (T_sky**4)
         
-        # 3. Back Radiation (Longwave Up)
+        # Back
         Q_br = 0.97 * sigma * (T_w_k**4)
         
-        # 4. Sensible Heat (Convection)
-        # VBA Formula: FluxConv = 0.62 * (h_min + ...) * (T_air - T_water)
-        # Note the 0.62 coefficient
-        # Wind function: h_min + 3*W? Or similar linear function.
-        # We stick to the linear form but apply the 0.62 factor.
-        h_wind = self.atmos.h_min + 3.0 * self.atmos.wind_speed
-        Q_h = 0.62 * h_wind * (water_temp - self.atmos.air_temp)
-        
-        # 5. Latent Heat (Evaporation)
-        # Dalton type: f(u) * (es_w - ea)
-        # Used by VBA: usually linked to sensible via Bowen or similar wind func
+        # Sensible/Latent
         es_a = 6.11 * 10**((7.5 * self.atmos.air_temp)/(237.3 + self.atmos.air_temp))
         es_w = 6.11 * 10**((7.5 * water_temp)/(237.3 + water_temp))
         ea = es_a * (self.atmos.humidity / 100.0)
+        h_conv = self.atmos.h_min + 3.0 * self.atmos.wind_speed 
+        Q_h = h_conv * (water_temp - self.atmos.air_temp)
+        Q_e = 3.0 * self.atmos.wind_speed * (es_w - ea)
+        if Q_e < 0 and es_w < ea: Q_e = 0
         
-        # Wind function for evap
-        Q_e = 0.62 * h_wind * (es_w - ea) # Using consistent structure
-        if Q_e < 0 and es_w < ea: Q_e = 0 # No condensation gain usually
-        
-        # Returns separate components for toggling
-        return {
-            "solar": Q_solar_absorbed,
-            "atmos": Q_an,
-            "back": -Q_br, # Negative because it leaves water
-            "sensible": -Q_h, # Positive if Air>Water, formula was (Tw - Ta) so negate
-            "latent": -Q_e
-        }
+        return {"solar": 0.9 * Q_sn, "atmos": Q_an, "back": -Q_br, "sensible": -Q_h, "latent": -Q_e}
 
     def apply_discharges(self, dt_split):
         vol_cell = self.grid.area_vertical * self.grid.dx
@@ -276,23 +236,20 @@ class RiverModel:
             q = d["flow"]
             if q <= 0: continue
             
-            # Weighted Average Formula (Mass Balance)
-            # C_new = (C_old * Vol + C_in * Q * dt) / (Vol + Q * dt)
-            denom = vol_cell + q * dt_split
+            rate = q / vol_cell
+            factor = math.exp(-rate * dt_split)
             
             if "Temperature" in self.constituents:
                 T_c = self.constituents["Temperature"].values[idx]
                 T_in = d["temp"]
-                T_new = (T_c * vol_cell + T_in * q * dt_split) / denom
-                self.constituents["Temperature"].values[idx] = T_new
+                self.constituents["Temperature"].values[idx] = T_in + (T_c - T_in) * factor
                 
             for name in ["BOD", "DO", "CO2", "Generic"]:
                 if name in self.constituents:
                     C_c = self.constituents[name].values[idx]
                     key = name.lower() 
                     val_in = d.get(key, 0.0)
-                    C_new = (C_c * vol_cell + val_in * q * dt_split) / denom
-                    self.constituents[name].values[idx] = C_new
+                    self.constituents[name].values[idx] = val_in + (C_c - val_in) * factor
 
     def solve_transport(self, dt):
         u = self.flow.velocity if self.config.advection_active else 0.0
@@ -310,7 +267,6 @@ class RiverModel:
         for name, prop in self.constituents.items():
             if not prop.active: continue
             
-            # Cyclic check: Only apply if BC is Cyclic AND flow is downstream (u >= 0)
             is_cyclic = (prop.bc_left_type == "Cyclic")
             apply_cyclic_logic = is_cyclic and (u >= 0)
             
@@ -318,7 +274,6 @@ class RiverModel:
             C_iter = C_old.copy() # Iteration guess
             
             for _ in range(n_iter):
-                # TDMA Arrays
                 a = np.zeros(nc)
                 b = np.zeros(nc)
                 c_diag = np.zeros(nc)
@@ -338,8 +293,6 @@ class RiverModel:
                     if self.config.advection_active:
                         adv_scheme = self.config.advection_type
                         
-                        # QUICK_UP Logic: Check gradients to fallback to Upwind
-                        # Simple monotonic check: if (C_i - C_i-1) * (C_i+1 - C_i) < 0 -> Oscillation risk
                         use_upwind = False
                         if adv_scheme == "QUICK":
                             grad1 = C_iter[i] - C_iter[i-1]
@@ -361,9 +314,7 @@ class RiverModel:
                             b[i] += theta * sigma
                             d_rhs[i] -= (1-theta)*sigma*(C_old[i] - C_old[i-1])
                             
-                            # Deferred Correction (evaluated at iter level)
                             im2 = i-2 if i>=2 else 0
-                            # Fluxes at n+1 estimate (C_iter)
                             fq_out = 0.5*(C_iter[i]+C_iter[i+1]) - 0.125*(C_iter[i-1]-2*C_iter[i]+C_iter[i+1])
                             fq_in = 0.5*(C_iter[i-1]+C_iter[i]) - 0.125*(C_iter[im2]-2*C_iter[i-1]+C_iter[i])
                             fu_out, fu_in = C_iter[i], C_iter[i-1]
@@ -373,7 +324,6 @@ class RiverModel:
 
                 # --- BOUNDARIES ---
                 if apply_cyclic_logic:
-                    # u > 0, wrap upstream
                     b[0] = 1.0; d_rhs[0] = C_iter[nc-1]
                     b[nc-1] = 1.0; d_rhs[nc-1] = C_iter[0]
                 else:
@@ -480,19 +430,14 @@ class RiverModel:
         wind = self.atmos.wind_speed
         
         # VBA Formula: K = (1/H) * 0.142 * (|W|+0.1) * (S + 1e-5) [1/s]
-        # This constant is specific to the model provided.
         k_reaeration = (1.0/h) * 0.142 * (abs(wind) + 0.1) * (slope + 1e-5)
         
         for p in [do_prop, co2_prop]:
             if p and p.use_surface_flux:
                 gas = "O2" if p.name=="DO" else "CO2"
                 for i in range(self.grid.nc):
-                    # implicit update C_new = (C_old + dt*K*Cs) / (1 + dt*K)
-                    # Equivalent to C_new = C_old + K*(Cs - C_new)*dt
-                    # We use explicit here for simplicity unless stiffness required:
-                    # Explicit: p += K*(Cs - p)*dt
-                    # Implicit is better for large K.
                     cs = self.calculate_saturation(temp[i], gas)
+                    # Implicit linear update for stability: (C + dt*K*Cs)/(1+dt*K)
                     p.values[i] = (p.values[i] + dt * k_reaeration * cs) / (1.0 + dt * k_reaeration)
 
         # Apply Clamping
