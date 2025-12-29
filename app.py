@@ -18,6 +18,9 @@ if 'config' not in st.session_state:
         'sunrise': 6.0, 'sunset': 18.0
     }
 
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
 def get_step(val):
     if val == 0: return 0.1
     magnitude = 10**math.floor(math.log10(abs(val)))
@@ -67,12 +70,22 @@ with main_tabs[0]:
         manning = st.number_input("Manning n (storage only)", value=st.session_state['config']['manning'], format="%.4f", step=0.001, key="manning")
         Q_in = st.number_input("Discharge (m³/s)", value=st.session_state['config']['Q_in'], step=1.0, key="Q_in")
         
+        # Fix: Grey out Diffusivity if diffusion inactive
         diff_disabled = (diffusion == "No")
         diff_in = st.number_input("Diffusivity (m²/s)", value=st.session_state['config']['diff_in'], step=0.1, disabled=diff_disabled, key="diff_in")
 
     area = width * depth
+    perimeter = width + 2*depth
+    rh = area/perimeter if perimeter > 0 else 0
     vel = Q_in / area if area > 0 else 0
-    st.info(f"**Calculated Velocity:** {vel:.4f} m/s")
+    sugg_diff = 0.01 + vel * width
+    
+    st.info(f"""
+    **Calculated Properties:**
+    - Flow Velocity: {vel:.4f} m/s
+    - Hydraulic Radius: {rh:.4f} m
+    - Suggested Diffusivity (0.01 + u*W): {sugg_diff:.4f} m²/s
+    """)
 
 with main_tabs[1]:
     st.header("Atmosphere")
@@ -123,6 +136,7 @@ with main_tabs[3]:
         act = c1.selectbox(f"{key} Active", ["Yes", "No"], key=f"{key}_act")
         is_active = (act == "Yes")
         
+        # Disable everything if inactive
         val = c2.number_input(f"Default {unit}", value=def_val, step=get_step(def_val), key=f"{key}_def", disabled=not is_active)
         
         c3, c4 = st.columns(2)
@@ -159,6 +173,7 @@ with main_tabs[3]:
                 df_ic_ed = st.data_editor(df_ic, num_rows="dynamic", key=f"{key}_ic_ed")
             else: df_ic_ed = pd.DataFrame()
         else:
+            # Dummies for inactive
             bc_l_type, bc_r_type, b_l_v, b_r_v, ic_mode, df_ic_ed = "Fixed", "ZeroGrad", 0.0, 0.0, "Default", pd.DataFrame()
 
         return {
@@ -223,6 +238,9 @@ with main_tabs[3]:
             cfg["k"] = k_sec
         configs["Generic"] = cfg
 
+# =============================================================================
+# RUN
+# =============================================================================
 if run_btn:
     model = RiverModel()
     with st.spinner("Calculating..."):
@@ -293,13 +311,16 @@ if run_btn:
         st.success("Simulation Complete")
         st.rerun()
 
+# =============================================================================
+# RESULTS
+# =============================================================================
 with main_tabs[4]:
     if 'results' in st.session_state:
         res = st.session_state['results']
         xc = st.session_state['grid']
         times = res['times']
         
-        tab1, tab2, tab3 = st.tabs(["Profiles", "Time Series", "Data Tables"])
+        tab1, tab2 = st.tabs(["Profiles", "Time Series"])
         
         with tab1:
             if len(times) > 0:
@@ -327,12 +348,3 @@ with main_tabs[4]:
                         ax.set_xlabel("Time (Days)")
                         ax.grid(True, alpha=0.3)
                         st.pyplot(fig)
-        
-        with tab3:
-            st.write("Export Data")
-            for name in configs.keys():
-                if configs[name]["active"] and name in res and len(res[name]) > 0:
-                    with st.expander(f"{name} Data Table"):
-                        df_res = pd.DataFrame(res[name], index=np.round(times, 3), columns=np.round(xc, 1))
-                        st.write(f"Rows=Time (Days), Cols=Distance (m) | Unit: {configs[name]['unit']}")
-                        st.dataframe(df_res)
