@@ -537,21 +537,41 @@ class RiverModel:
         self.current_time += dt
 
     def run_simulation(self):
-        total_steps = int((self.config.duration_days * 86400) / self.config.dt)
-        print_interval = int(self.config.dt_print / self.config.dt)
-        if print_interval < 1: print_interval = 1
-        
+        """Run the simulation and record outputs at t=0 and at dt_print intervals.
+
+        This mirrors the intent of the VBA model where results are printed when the
+        simulation time reaches the next print time, rather than using a simple
+        integer step modulus (which can drift if dt_print is not an integer multiple
+        of dt).
+        """
+        total_time_s = float(self.config.duration_days) * 86400.0
+        dt = float(self.config.dt)
+        dt_print = max(float(self.config.dt_print), dt)
+
+        # Reset outputs
         self.results["times"] = []
         for name in self.constituents:
             self.results[name] = []
-            
-        for step_n in range(total_steps):
+
+        # Always store initial condition (t=0)
+        self.results["times"].append(0.0)
+        for name, prop in self.constituents.items():
+            self.results[name].append(prop.values.copy())
+
+        next_print = dt_print
+        n_steps = int(math.ceil(total_time_s / dt)) if dt > 0 else 0
+
+        for step_n in range(n_steps):
             self.step()
-            if step_n % print_interval == 0:
+
+            # Record as many print instants as we have passed
+            while self.current_time + 1e-12 >= next_print:
                 self.results["times"].append(self.current_time / 86400.0)
                 for name, prop in self.constituents.items():
                     self.results[name].append(prop.values.copy())
-            yield step_n / total_steps
+                next_print += dt_print
+
+            yield (step_n + 1) / max(n_steps, 1)
             
     def run(self, callback=None):
         runner = self.run_simulation()
