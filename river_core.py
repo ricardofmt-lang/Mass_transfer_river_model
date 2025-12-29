@@ -252,116 +252,200 @@ class RiverModel:
                     self.constituents[name].values[idx] = val_in + (C_c - val_in) * factor
 
     def solve_transport(self, dt):
+        """
+        Advance all active constituents by one transport step.  This routine
+        accounts for diffusion and advection using a finite-volume approach.
+        For purely diffusive problems (i.e., advection turned off) it
+        reproduces the same coefficient structure used in the original VBA
+        implementation.  Semi‑implicit (Crank–Nicolson), implicit and
+        explicit time discretisations are supported via the time_discretisation
+        setting.  When advection is active the original QUICK/Upwind/Central
+        schemes are retained.
+        """
+
         u = self.flow.velocity if self.config.advection_active else 0.0
         D = self.flow.diffusivity if self.config.diffusion_active else 0.0
         dx = self.grid.dx
         nc = self.grid.nc
-        
-        # Courant/Diffusion Check
+
+        # dimensionless numbers
         sigma = u * dt / dx
         beta = D * dt / (dx**2)
-        
-        # Picard Iteration Count for Quasi-Implicit QUICK
-        n_iter = 2 if self.config.advection_type == "QUICK" else 1
-        
+
+        # Determine theta based on chosen time discretisation
+        disc = self.config.time_discretisation.lower()
+        if disc == "exp":
+            theta = 0.0
+        elif disc == "imp":
+            theta = 1.0
+        else:  # semi or any other
+            theta = 0.5
+
+        # Loop through constituents
         for name, prop in self.constituents.items():
-            if not prop.active: continue
-            
-            is_cyclic = (prop.bc_left_type == "Cyclic")
-            apply_cyclic_logic = is_cyclic and (u >= 0)
-            
+            if not prop.active:
+                continue
+
+            # Copy old solution
             C_old = prop.values.copy()
-            C_iter = C_old.copy() # Iteration guess
-            
-            for _ in range(n_iter):
+
+            # If advection is disabled, construct coefficients as in the VBA
+            # implementation.  This branch handles diffusion–only problems and
+            # implements the boundary conditions used by the macros.  When
+            # advection is enabled we fall back on the original scheme (below).
+            if u == 0.0 and D > 0.0:
+                # Build coefficient arrays for diffusion
+                Bv = np.full(nc, beta)
+                ev = np.full(nc, -2.0*beta)
+                fv = np.full(nc, beta)
+                # Boundary adjustments (zero–flux at domain ends)
+                Bv[0] = 0.0; ev[0] = -beta; fv[0] = beta
+                Bv[nc-1] = beta; ev[nc-1] = -beta; fv[nc-1] = 0.0
+
+                # Allocate tridiagonal matrix and RHS
                 a = np.zeros(nc)
                 b = np.zeros(nc)
                 c_diag = np.zeros(nc)
                 d_rhs = np.zeros(nc)
-                
-                theta = 0.5 if self.config.time_discretisation == "semi" else 1.0
-                
-                # --- INTERNAL NODES ---
+
+                # Precompute a, b, c and RHS for each cell
+                for i in range(nc):
+                    a[i] = -theta * Bv[i]
+                    b[i] = 1.0 - theta * ev[i]
+                    c_diag[i] = -theta * fv[i]
+                    # Start RHS with old value
+                    d_rhs[i] = C_old[i]
+
+                # Left boundary (i=0)
+                # For diffusion the macros use zero–flux at the boundaries.
+                # The boundary values specified by bc_left_val/bc_right_val
+                # are not used when advection is off.
+                # Update RHS for left node using VBA logic:
+                # d0 = C_old[0] + (1-theta)*(ev[0]*C_old[0] + fv[0]*C_old[1])
+                d_rhs[0] = C_old[0] + (1.0 - theta) * (ev[0] * C_old[0] + fv[0] * C_old[1])
+                # Right boundary (i=nc-1)
+                # dN = C_old[N] + (1-theta)*(Bv[N]*C_old[N-1] + ev[N]*C_old[N])
+                d_rhs[nc-1] = C_old[nc-1] + (1.0 - theta) * (Bv[nc-1] * C_old[nc-2] + ev[nc-1] * C_old[nc-1])
+                # Interior nodes
                 for i in range(1, nc-1):
-                    # Diffusion
+                    d_rhs[i] = C_old[i] + (1.0 - theta) * (Bv[i] * C_old[i-1] + ev[i] * C_old[i] + fv[i] * C_old[i+1])
+
+                # Solve tridiagonal system via Thomas algorithm
+                cp = np.zeros(nc)
+                dp = np.zeros(nc)
+                # Guard against zero division on b[0]
+                denom = b[0] if b[0] != 0 else 1e-15
+                cp[0] = c_diag[0] / denom
+                dp[0] = d_rhs[0] / denom
+                for i in range(1, nc):
+                    denom = b[i] - a[i] * cp[i-1]
+                    if denom == 0:
+                        denom = 1e-15
+                    cp[i] = c_diag[i] / denom if i < nc - 1 else 0.0
+                    dp[i] = (d_rhs[i] - a[i] * dp[i-1]) / denom
+                C_new = np.zeros(nc)
+                C_new[nc-1] = dp[nc-1]
+                for i in range(nc-2, -1, -1):
+                    C_new[i] = dp[i] - cp[i] * C_new[i+1]
+                # Clamp to bounds
+                np.clip(C_new, prop.min_val, prop.max_val, out=C_new)
+                prop.values = C_new
+                continue  # Finished with diffusion only case
+
+            # -----------------------------------------------------------------
+            # Advection/diffusion solver (original implementation)
+            # When advection is enabled or u != 0, we retain the existing
+            # upwind/central/QUICK discretisations with Picard iteration.  The
+            # original solver has been left largely intact and is executed
+            # whenever this branch is taken.
+            is_cyclic = (prop.bc_left_type == "Cyclic")
+            apply_cyclic_logic = is_cyclic and (u >= 0)
+
+            # Picard Iteration Count for Quasi‑Implicit QUICK
+            n_iter = 2 if self.config.advection_type == "QUICK" else 1
+
+            C_iter = C_old.copy()  # Iteration guess
+            for _ in range(n_iter):
+                a = np.zeros(nc)
+                b = np.zeros(nc)
+                c_d = np.zeros(nc)
+                d_rhs = np.zeros(nc)
+
+                # Internal nodes
+                for i in range(1, nc-1):
+                    # Diffusion (central second‑order)
                     a[i] = -theta * beta
-                    b[i] = 1 + 2 * theta * beta
-                    c_diag[i] = -theta * beta
-                    d_rhs[i] = C_old[i] + (1-theta)*beta*(C_old[i+1] - 2*C_old[i] + C_old[i-1])
-                    
+                    b[i] = 1.0 + 2.0 * theta * beta
+                    c_d[i] = -theta * beta
+                    d_rhs[i] = C_old[i] + (1.0 - theta) * beta * (C_old[i+1] - 2.0 * C_old[i] + C_old[i-1])
+
                     # Advection
-                    if self.config.advection_active:
+                    if self.config.advection_active and u != 0.0:
                         adv_scheme = self.config.advection_type
-                        
                         use_upwind = False
                         if adv_scheme == "QUICK":
                             grad1 = C_iter[i] - C_iter[i-1]
                             grad2 = C_iter[i+1] - C_iter[i]
                             if grad1 * grad2 < 0:
                                 use_upwind = True
-                        
                         if adv_scheme == "Central":
-                            a[i] -= theta * sigma / 2
-                            c_diag[i] += theta * sigma / 2
-                            d_rhs[i] -= (1-theta)*(sigma/2)*(C_old[i+1] - C_old[i-1])
+                            a[i] -= theta * sigma / 2.0
+                            c_d[i] += theta * sigma / 2.0
+                            d_rhs[i] -= (1.0 - theta) * (sigma / 2.0) * (C_old[i+1] - C_old[i-1])
                         elif adv_scheme == "Upwind" or use_upwind:
                             a[i] -= theta * sigma
                             b[i] += theta * sigma
-                            d_rhs[i] -= (1-theta)*sigma*(C_old[i] - C_old[i-1])
+                            d_rhs[i] -= (1.0 - theta) * sigma * (C_old[i] - C_old[i-1])
                         elif adv_scheme == "QUICK":
-                            # Implicit Upwind Core
+                            # Implicit upwind core
                             a[i] -= theta * sigma
                             b[i] += theta * sigma
-                            d_rhs[i] -= (1-theta)*sigma*(C_old[i] - C_old[i-1])
-                            
-                            im2 = i-2 if i>=2 else 0
-                            fq_out = 0.5*(C_iter[i]+C_iter[i+1]) - 0.125*(C_iter[i-1]-2*C_iter[i]+C_iter[i+1])
-                            fq_in = 0.5*(C_iter[i-1]+C_iter[i]) - 0.125*(C_iter[im2]-2*C_iter[i-1]+C_iter[i])
-                            fu_out, fu_in = C_iter[i], C_iter[i-1]
-                            
-                            corr = -(u/dx) * ((fq_out - fq_in) - (fu_out - fu_in))
+                            d_rhs[i] -= (1.0 - theta) * sigma * (C_old[i] - C_old[i-1])
+                            # QUICK correction term
+                            im2 = i - 2 if i >= 2 else 0
+                            fq_out = 0.5 * (C_iter[i] + C_iter[i+1]) - 0.125 * (C_iter[i-1] - 2.0 * C_iter[i] + C_iter[i+1])
+                            fq_in = 0.5 * (C_iter[i-1] + C_iter[i]) - 0.125 * (C_iter[im2] - 2.0 * C_iter[i-1] + C_iter[i])
+                            fu_out = C_iter[i]
+                            fu_in = C_iter[i-1]
+                            corr = -(u / dx) * ((fq_out - fq_in) - (fu_out - fu_in))
                             d_rhs[i] += corr * dt * self.config.quick_up_ratio
 
-                # --- BOUNDARIES ---
+                # Boundary conditions
                 if apply_cyclic_logic:
                     b[0] = 1.0; d_rhs[0] = C_iter[nc-1]
                     b[nc-1] = 1.0; d_rhs[nc-1] = C_iter[0]
                 else:
-                    # Left
+                    # Left boundary
                     if prop.bc_left_type == "Fixed":
                         b[0] = 1.0; d_rhs[0] = prop.bc_left_val
-                    else: # ZeroGrad
-                        b[0] = 1.0; c_diag[0] = -1.0; d_rhs[0] = 0.0
-                    
-                    # Right
+                    else:  # ZeroGrad
+                        b[0] = 1.0; c_d[0] = -1.0; d_rhs[0] = 0.0
+                    # Right boundary
                     if prop.bc_right_type == "Fixed":
                         b[nc-1] = 1.0; d_rhs[nc-1] = prop.bc_right_val
-                    else: # ZeroGrad
+                    else:  # ZeroGrad
                         a[nc-1] = -1.0; b[nc-1] = 1.0; d_rhs[nc-1] = 0.0
 
-                # --- SOLVER ---
-                if b[0] == 0: b[0] = 1e-15
+                # Solve the tri‑diagonal system
                 cp = np.zeros(nc)
                 dp = np.zeros(nc)
-                
-                cp[0] = c_diag[0] / b[0]
-                dp[0] = d_rhs[0] / b[0]
-                
+                denom = b[0] if b[0] != 0 else 1e-15
+                cp[0] = c_d[0] / denom
+                dp[0] = d_rhs[0] / denom
                 for i in range(1, nc):
-                    denom = b[i] - a[i]*cp[i-1]
-                    if denom == 0: denom = 1e-15
-                    cp[i] = c_diag[i] / denom
-                    dp[i] = (d_rhs[i] - a[i]*dp[i-1]) / denom
-                
+                    denom = b[i] - a[i] * cp[i-1]
+                    if denom == 0:
+                        denom = 1e-15
+                    cp[i] = c_d[i] / denom if i < nc - 1 else 0.0
+                    dp[i] = (d_rhs[i] - a[i] * dp[i-1]) / denom
                 C_new = np.zeros(nc)
                 C_new[nc-1] = dp[nc-1]
                 for i in range(nc-2, -1, -1):
-                    C_new[i] = dp[i] - cp[i]*C_new[i+1]
-                
+                    C_new[i] = dp[i] - cp[i] * C_new[i+1]
                 C_iter = C_new.copy()
-                
-            np.clip(C_new, prop.min_val, prop.max_val, out=C_new)
-            prop.values = C_new
+            # Clip to bounds and assign
+            np.clip(C_iter, prop.min_val, prop.max_val, out=C_iter)
+            prop.values = C_iter
 
     def apply_kinetics(self, dt):
         temp = self.constituents["Temperature"].values if "Temperature" in self.constituents else np.full(self.grid.nc, 20.0)
