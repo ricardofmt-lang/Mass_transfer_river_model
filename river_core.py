@@ -52,19 +52,23 @@ class Constituent:
     values: np.ndarray
     old_values: np.ndarray
     
+    # Constraints
     min_val: float = -1e9
     max_val: float = 1e9
     
+    # Boundary Conditions
     bc_left_type: str = "Fixed"
     bc_left_val: float = 0.0
     bc_right_type: str = "ZeroGrad"
     bc_right_val: float = 0.0
     
+    # Flux Toggles
     use_surface_flux: bool = True     
     use_sensible_heat: bool = True    
     use_latent_heat: bool = True      
     use_radiative_heat: bool = True   
     
+    # Kinetics
     k_decay: float = 0.0              
     k_growth: float = 0.0             
     max_val_logistic: float = 0.0     
@@ -111,11 +115,8 @@ class RiverModel:
         
         self.flow.discharge = discharge
         self.flow.diffusivity = diffusivity
-        # Standard velocity calculation for rectangular channel
-        if self.grid.area_vertical > 0:
-            self.flow.velocity = discharge / self.grid.area_vertical
-        else:
-            self.flow.velocity = 0.0
+        # If area is 0, avoid div zero
+        self.flow.velocity = discharge / self.grid.area_vertical if self.grid.area_vertical > 0 else 0.0
 
     def setup_atmos(self, temp, wind, humidity, solar, lat, cloud, sunrise, sunset, h_min, sky_temp, sky_imposed):
         self.atmos.air_temp = temp
@@ -136,6 +137,7 @@ class RiverModel:
                         bc_left_type="Fixed", bc_left_val=0.0,
                         bc_right_type="ZeroGrad", bc_right_val=0.0,
                         min_val=-1e9, max_val=1e9,
+                        # Specific flags
                         use_surface_flux=True, use_sensible=True, use_latent=True, use_radiative=True,
                         k_decay=0.0, k_growth=0.0, max_logistic=0.0, use_logistic=False, 
                         use_anaerobic=False, o2_half_sat=0.0):
@@ -176,6 +178,10 @@ class RiverModel:
             if "cell" in d and 0 <= d["cell"] < self.grid.nc:
                 self.discharges.append(d)
 
+    # -------------------------------------------------------------------------
+    # PHYSICS
+    # -------------------------------------------------------------------------
+
     def calculate_henry_constant(self, temp_c, gas_type="O2"):
         vals = self.atmos.henry_table_o2 if gas_type == "O2" else self.atmos.henry_table_co2
         return np.interp(temp_c, self.atmos.henry_table_temps, vals)
@@ -186,47 +192,39 @@ class RiverModel:
         mw = 32000.0 if gas_type == "O2" else 44000.0
         return (p_atm * kh) * mw / 1000.0
 
-    def calculate_solar_radiation(self, time_sec):
-        day_of_year = int((time_sec / 86400.0) % 365) + 1
-        hour = (time_sec / 3600.0) % 24
-        
-        phi = math.radians(self.atmos.latitude)
-        delta = 0.409 * math.sin(2 * math.pi / 365.0 * (284 + day_of_year))
-        omega = (math.pi / 12.0) * (hour - 12.0)
-        
-        sin_alpha = math.sin(phi) * math.sin(delta) + math.cos(phi) * math.cos(delta) * math.cos(omega)
-        
-        if sin_alpha <= 0: return 0.0
-        
-        I_0 = self.atmos.solar_constant
-        Q_s = I_0 * sin_alpha * (1.0 - 0.65 * (self.atmos.cloud_cover/100.0)**2)
-        return max(0.0, Q_s)
-
     def calculate_heat_fluxes(self, water_temp, time_sec):
         sigma = 5.67e-8
         kelvin = 273.15
         T_w_k = water_temp + kelvin
         T_a_k = self.atmos.air_temp + kelvin
         
-        Q_sn = self.calculate_solar_radiation(time_sec)
-        Q_solar_absorbed = 0.9 * Q_sn
+        Q_sn, Q_an, Q_br, Q_h, Q_e = 0.0, 0.0, 0.0, 0.0, 0.0
         
+        # Solar
+        hour = (time_sec / 3600.0) % 24
+        if self.atmos.sunrise_hour < hour < self.atmos.sunset_hour:
+            day_len = self.atmos.sunset_hour - self.atmos.sunrise_hour
+            norm_time = (hour - self.atmos.sunrise_hour) / day_len
+            Q_max = self.atmos.solar_constant * (1 - 0.65 * (self.atmos.cloud_cover/100)**2)
+            Q_sn = Q_max * math.sin(math.pi * norm_time)
+        
+        # Atmos
         if self.atmos.sky_temp_imposed:
             T_sky = self.atmos.sky_temp + kelvin
         else:
             T_sky = 0.0552 * (T_a_k**1.5)
         Q_an = 0.97 * sigma * (T_sky**4)
         
+        # Back
         Q_br = 0.97 * sigma * (T_w_k**4)
         
+        # Sensible/Latent
         es_a = 6.11 * 10**((7.5 * self.atmos.air_temp)/(237.3 + self.atmos.air_temp))
         es_w = 6.11 * 10**((7.5 * water_temp)/(237.3 + water_temp))
         ea = es_a * (self.atmos.humidity / 100.0)
-        
-        h_wind = self.atmos.h_min + 3.0 * self.atmos.wind_speed
-        Q_h = 0.62 * h_wind * (water_temp - self.atmos.air_temp)
-        
-        Q_e = 0.62 * h_wind * (es_w - ea)
+        h_conv = self.atmos.h_min + 3.0 * self.atmos.wind_speed 
+        Q_h = h_conv * (water_temp - self.atmos.air_temp)
+        Q_e = 3.0 * self.atmos.wind_speed * (es_w - ea)
         if Q_e < 0 and es_w < ea: Q_e = 0
         
         return {"solar": 0.9 * Q_sn, "atmos": Q_an, "back": -Q_br, "sensible": -Q_h, "latent": -Q_e}
@@ -254,226 +252,200 @@ class RiverModel:
                     self.constituents[name].values[idx] = val_in + (C_c - val_in) * factor
 
     def solve_transport(self, dt):
+        """
+        Advance all active constituents by one transport step.  This routine
+        accounts for diffusion and advection using a finite-volume approach.
+        For purely diffusive problems (i.e., advection turned off) it
+        reproduces the same coefficient structure used in the original VBA
+        implementation.  Semi‑implicit (Crank–Nicolson), implicit and
+        explicit time discretisations are supported via the time_discretisation
+        setting.  When advection is active the original QUICK/Upwind/Central
+        schemes are retained.
+        """
+
         u = self.flow.velocity if self.config.advection_active else 0.0
         D = self.flow.diffusivity if self.config.diffusion_active else 0.0
         dx = self.grid.dx
         nc = self.grid.nc
-        
+
+        # dimensionless numbers
         sigma = u * dt / dx
         beta = D * dt / (dx**2)
-        
-        n_iter = 2 if self.config.advection_type == "QUICK" else 1
-        
+
+        # Determine theta based on chosen time discretisation
+        disc = self.config.time_discretisation.lower()
+        if disc == "exp":
+            theta = 0.0
+        elif disc == "imp":
+            theta = 1.0
+        else:  # semi or any other
+            theta = 0.5
+
+        # Loop through constituents
         for name, prop in self.constituents.items():
-            if not prop.active: continue
-            
-            is_cyclic = (prop.bc_left_type == "Cyclic")
-            
+            if not prop.active:
+                continue
+
+            # Copy old solution
             C_old = prop.values.copy()
-            C_iter = C_old.copy() 
-            
-            for _ in range(n_iter):
+
+            # If advection is disabled, construct coefficients as in the VBA
+            # implementation.  This branch handles diffusion–only problems and
+            # implements the boundary conditions used by the macros.  When
+            # advection is enabled we fall back on the original scheme (below).
+            if u == 0.0 and D > 0.0:
+                # Build coefficient arrays for diffusion
+                Bv = np.full(nc, beta)
+                ev = np.full(nc, -2.0*beta)
+                fv = np.full(nc, beta)
+                # Boundary adjustments (zero–flux at domain ends)
+                Bv[0] = 0.0; ev[0] = -beta; fv[0] = beta
+                Bv[nc-1] = beta; ev[nc-1] = -beta; fv[nc-1] = 0.0
+
+                # Allocate tridiagonal matrix and RHS
                 a = np.zeros(nc)
                 b = np.zeros(nc)
                 c_diag = np.zeros(nc)
                 d_rhs = np.zeros(nc)
-                
-                theta = 0.5 if self.config.time_discretisation == "semi" else 1.0
-                
-                # --- INTERNAL NODES ---
+
+                # Precompute a, b, c and RHS for each cell
+                for i in range(nc):
+                    a[i] = -theta * Bv[i]
+                    b[i] = 1.0 - theta * ev[i]
+                    c_diag[i] = -theta * fv[i]
+                    # Start RHS with old value
+                    d_rhs[i] = C_old[i]
+
+                # Left boundary (i=0)
+                # For diffusion the macros use zero–flux at the boundaries.
+                # The boundary values specified by bc_left_val/bc_right_val
+                # are not used when advection is off.
+                # Update RHS for left node using VBA logic:
+                # d0 = C_old[0] + (1-theta)*(ev[0]*C_old[0] + fv[0]*C_old[1])
+                d_rhs[0] = C_old[0] + (1.0 - theta) * (ev[0] * C_old[0] + fv[0] * C_old[1])
+                # Right boundary (i=nc-1)
+                # dN = C_old[N] + (1-theta)*(Bv[N]*C_old[N-1] + ev[N]*C_old[N])
+                d_rhs[nc-1] = C_old[nc-1] + (1.0 - theta) * (Bv[nc-1] * C_old[nc-2] + ev[nc-1] * C_old[nc-1])
+                # Interior nodes
                 for i in range(1, nc-1):
-                    # Diffusion Implicit
+                    d_rhs[i] = C_old[i] + (1.0 - theta) * (Bv[i] * C_old[i-1] + ev[i] * C_old[i] + fv[i] * C_old[i+1])
+
+                # Solve tridiagonal system via Thomas algorithm
+                cp = np.zeros(nc)
+                dp = np.zeros(nc)
+                # Guard against zero division on b[0]
+                denom = b[0] if b[0] != 0 else 1e-15
+                cp[0] = c_diag[0] / denom
+                dp[0] = d_rhs[0] / denom
+                for i in range(1, nc):
+                    denom = b[i] - a[i] * cp[i-1]
+                    if denom == 0:
+                        denom = 1e-15
+                    cp[i] = c_diag[i] / denom if i < nc - 1 else 0.0
+                    dp[i] = (d_rhs[i] - a[i] * dp[i-1]) / denom
+                C_new = np.zeros(nc)
+                C_new[nc-1] = dp[nc-1]
+                for i in range(nc-2, -1, -1):
+                    C_new[i] = dp[i] - cp[i] * C_new[i+1]
+                # Clamp to bounds
+                np.clip(C_new, prop.min_val, prop.max_val, out=C_new)
+                prop.values = C_new
+                continue  # Finished with diffusion only case
+
+            # -----------------------------------------------------------------
+            # Advection/diffusion solver (original implementation)
+            # When advection is enabled or u != 0, we retain the existing
+            # upwind/central/QUICK discretisations with Picard iteration.  The
+            # original solver has been left largely intact and is executed
+            # whenever this branch is taken.
+            is_cyclic = (prop.bc_left_type == "Cyclic")
+            apply_cyclic_logic = is_cyclic and (u >= 0)
+
+            # Picard Iteration Count for Quasi‑Implicit QUICK
+            n_iter = 2 if self.config.advection_type == "QUICK" else 1
+
+            C_iter = C_old.copy()  # Iteration guess
+            for _ in range(n_iter):
+                a = np.zeros(nc)
+                b = np.zeros(nc)
+                c_d = np.zeros(nc)
+                d_rhs = np.zeros(nc)
+
+                # Internal nodes
+                for i in range(1, nc-1):
+                    # Diffusion (central second‑order)
                     a[i] = -theta * beta
                     b[i] = 1.0 + 2.0 * theta * beta
-                    c_diag[i] = -theta * beta
-                    
-                    # Diffusion Explicit
-                    diff_exp = (1.0-theta)*beta*(C_old[i+1] - 2.0*C_old[i] + C_old[i-1])
-                    d_rhs[i] = C_old[i] + diff_exp
-                    
+                    c_d[i] = -theta * beta
+                    d_rhs[i] = C_old[i] + (1.0 - theta) * beta * (C_old[i+1] - 2.0 * C_old[i] + C_old[i-1])
+
                     # Advection
-                    if self.config.advection_active:
+                    if self.config.advection_active and u != 0.0:
                         adv_scheme = self.config.advection_type
-                        
                         use_upwind = False
                         if adv_scheme == "QUICK":
                             grad1 = C_iter[i] - C_iter[i-1]
                             grad2 = C_iter[i+1] - C_iter[i]
-                            if grad1 * grad2 < 0: use_upwind = True
-                        
+                            if grad1 * grad2 < 0:
+                                use_upwind = True
                         if adv_scheme == "Central":
                             a[i] -= theta * sigma / 2.0
-                            c_diag[i] += theta * sigma / 2.0
-                            d_rhs[i] -= (1.0-theta)*(sigma/2.0)*(C_old[i+1] - C_old[i-1])
+                            c_d[i] += theta * sigma / 2.0
+                            d_rhs[i] -= (1.0 - theta) * (sigma / 2.0) * (C_old[i+1] - C_old[i-1])
                         elif adv_scheme == "Upwind" or use_upwind:
                             a[i] -= theta * sigma
                             b[i] += theta * sigma
-                            d_rhs[i] -= (1.0-theta)*sigma*(C_old[i] - C_old[i-1])
+                            d_rhs[i] -= (1.0 - theta) * sigma * (C_old[i] - C_old[i-1])
                         elif adv_scheme == "QUICK":
+                            # Implicit upwind core
                             a[i] -= theta * sigma
                             b[i] += theta * sigma
-                            d_rhs[i] -= (1.0-theta)*sigma*(C_old[i] - C_old[i-1])
-                            
-                            im2 = i-2 if i>=2 else 0
-                            fq_out = 0.5*(C_iter[i]+C_iter[i+1]) - 0.125*(C_iter[i-1]-2*C_iter[i]+C_iter[i+1])
-                            fq_in = 0.5*(C_iter[i-1]+C_iter[i]) - 0.125*(C_iter[im2]-2*C_iter[i-1]+C_iter[i])
-                            fu_out, fu_in = C_iter[i], C_iter[i-1]
-                            
-                            corr = -(u/dx) * ((fq_out - fq_in) - (fu_out - fu_in))
+                            d_rhs[i] -= (1.0 - theta) * sigma * (C_old[i] - C_old[i-1])
+                            # QUICK correction term
+                            im2 = i - 2 if i >= 2 else 0
+                            fq_out = 0.5 * (C_iter[i] + C_iter[i+1]) - 0.125 * (C_iter[i-1] - 2.0 * C_iter[i] + C_iter[i+1])
+                            fq_in = 0.5 * (C_iter[i-1] + C_iter[i]) - 0.125 * (C_iter[im2] - 2.0 * C_iter[i-1] + C_iter[i])
+                            fu_out = C_iter[i]
+                            fu_in = C_iter[i-1]
+                            corr = -(u / dx) * ((fq_out - fq_in) - (fu_out - fu_in))
                             d_rhs[i] += corr * dt * self.config.quick_up_ratio
 
-                # --- BOUNDARY CONDITIONS (Flux-Based Finite Volume) ---
-                
-                # LEFT (i=0)
-                # Flux In (West)
-                if is_cyclic and u >= 0:
-                    b[0] = 1.0; d_rhs[0] = C_iter[nc-1] # Simple lag for cyclic
-                else:
-                    # Balance: dC/dt = (Fin - Fout) / dx
-                    # C_new - dt/dx * (Fin - Fout) = C_old
-                    # Fin is at face 0.
-                    # Fixed Val Cb: Fin = u*Cb + (2D/dx)*(Cb - C0)
-                    # ZeroGrad: Fin = u*C0
-                    
-                    term_diff_bound = 2.0 * D / dx if self.config.diffusion_active else 0.0
-                    
-                    # Implicit contribution to b[0] and d_rhs[0]
-                    # We start with basic identity C0_new = C0_old, then add fluxes
-                    b[0] = 1.0
-                    d_rhs[0] = C_old[0]
-                    
-                    # Add Flux terms scaled by dt/dx
-                    # Outgoing flux to cell 1 (internal) is handled by solving whole system? 
-                    # No, for i=0 we must define the connection to 1 explicitely or implicitely.
-                    # We use standard coefficients for right side (c_diag)
-                    
-                    # Let's use the standard discretized equation for node 0, but modified for boundary flux
-                    # Standard: C0_new + theta*(-FluxNet_imp) = C0_old + (1-theta)*(-FluxNet_exp)
-                    # FluxNet = F_east - F_west
-                    
-                    # F_east (to node 1):
-                    # Diff: -D(C1 - C0)/dx. Adv: u*C0 (upwind) or u*(C0+C1)/2 (central)
-                    # Use Upwind/Central mix as per config
-                    
-                    # F_west (Boundary):
-                    # Fixed: u*Cb - 2D/dx(C0 - Cb)
-                    
-                    # Construct coefs for 0
-                    # c_diag[0] (affects C1), b[0] (affects C0)
-                    
-                    # 1. East Face (Standard)
-                    if self.config.diffusion_active:
-                        # Diff flux out: -D(C1-C0)/dx
-                        # Term in eq: - (-D(C1-C0)/dx) / dx = D/dx^2 * (C1 - C0)
-                        # = beta/dt * (C1 - C0)
-                        # Implicit part: -theta*beta*C1 + theta*beta*C0
-                        b[0] += theta * beta
-                        c_diag[0] += -theta * beta
-                        d_rhs[0] += (1-theta)*beta*(C_old[1] - C_old[0])
-                    
-                    if self.config.advection_active:
-                        # Adv flux out: u*C0 (Upwind)
-                        # Term: + u/dx * C0 = sigma/dt * C0
-                        # Implicit: theta*sigma * C0
-                        b[0] += theta * sigma
-                        d_rhs[0] -= (1-theta)*sigma*C_old[0]
-                        
-                    # 2. West Face (Boundary)
-                    # Flux In. Term in eq: + F_west / dx
-                    # Fixed:
-                    if prop.bc_left_type == "Fixed":
-                        val = prop.bc_left_val
-                        # Adv In: u*val. Term: + u/dx * val = sigma/dt * val
-                        if self.config.advection_active:
-                            d_rhs[0] += theta*sigma*val + (1-theta)*sigma*val # All explicit source
-                        
-                        # Diff In: -2D/dx(C0 - val) = 2D/dx * val - 2D/dx * C0
-                        # Term: + (2D/dx^2) * val - (2D/dx^2) * C0
-                        # = 2*beta/dt * val - 2*beta/dt * C0
-                        if self.config.diffusion_active:
-                            d_rhs[0] += 2*beta*val # Explicit source part
-                            b[0] += theta * 2 * beta # Implicit C0 part (moved to LHS)
-                            d_rhs[0] -= (1-theta)*2*beta*C_old[0] # Explicit C0 part
-                            
-                    else: # ZeroGrad
-                        # Flux In = u*C0. (Diff=0)
-                        # Term: + u/dx * C0 = sigma/dt * C0
-                        if self.config.advection_active:
-                            b[0] -= theta * sigma # Moves to LHS? 
-                            # Wait, Flux In adds to volume. + (theta*sigma*C0_new). 
-                            # Moved to LHS (b) becomes -theta*sigma
-                            d_rhs[0] += (1-theta)*sigma*C_old[0]
-
-                # RIGHT (i=N-1)
-                if apply_cyclic:
+                # Boundary conditions
+                if apply_cyclic_logic:
+                    b[0] = 1.0; d_rhs[0] = C_iter[nc-1]
                     b[nc-1] = 1.0; d_rhs[nc-1] = C_iter[0]
                 else:
-                    # Balance Cell N-1
-                    b[nc-1] = 1.0
-                    d_rhs[nc-1] = C_old[nc-1]
-                    
-                    # 1. West Face (from N-2)
-                    # Standard formulation
-                    if self.config.diffusion_active:
-                        b[nc-1] += theta * beta
-                        a[nc-1] += -theta * beta
-                        d_rhs[nc-1] += (1-theta)*beta*(C_old[nc-2] - C_old[nc-1])
-                        
-                    if self.config.advection_active:
-                        # Upwind In: u*C_N-2
-                        # Term: + u/dx * C_N-2
-                        # Implicit: -theta*sigma*C_N-2 (LHS a)
-                        a[nc-1] -= theta * sigma
-                        d_rhs[nc-1] += (1-theta)*sigma*C_old[nc-2]
-                        
-                    # 2. East Face (Boundary)
-                    # Flux Out. Term: - F_east / dx
+                    # Left boundary
+                    if prop.bc_left_type == "Fixed":
+                        b[0] = 1.0; d_rhs[0] = prop.bc_left_val
+                    else:  # ZeroGrad
+                        b[0] = 1.0; c_d[0] = -1.0; d_rhs[0] = 0.0
+                    # Right boundary
                     if prop.bc_right_type == "Fixed":
-                        val = prop.bc_right_val
-                        # Adv Out: u*C_N-1 (Assuming upwind outflow even if fixed val? No, if fixed, concentration is fixed at face)
-                        # Usually outflow is ZeroGrad. If Fixed, implies forced condition.
-                        # Diff Out: -2D/dx (val - C_N-1)
-                        if self.config.diffusion_active:
-                            # Term: - [ -2D/dx^2 (val - C) ] = 2beta/dt * (val - C)
-                            d_rhs[nc-1] += 2*beta*val
-                            b[nc-1] += theta * 2 * beta
-                            d_rhs[nc-1] -= (1-theta)*2*beta*C_old[nc-1]
-                            
-                        if self.config.advection_active:
-                            # Out: u * val ?? Or u * C_N-1?
-                            # Standard transport equation outflow is u*C_N-1.
-                            b[nc-1] += theta * sigma
-                            d_rhs[nc-1] -= (1-theta)*sigma*C_old[nc-1]
-                            
-                    else: # ZeroGrad
-                        # Flux Out: u*C_N-1
-                        if self.config.advection_active:
-                            b[nc-1] += theta * sigma
-                            d_rhs[nc-1] -= (1-theta)*sigma*C_old[nc-1]
+                        b[nc-1] = 1.0; d_rhs[nc-1] = prop.bc_right_val
+                    else:  # ZeroGrad
+                        a[nc-1] = -1.0; b[nc-1] = 1.0; d_rhs[nc-1] = 0.0
 
-                # --- SOLVE TDMA ---
-                if b[0] == 0: b[0] = 1e-15
+                # Solve the tri‑diagonal system
                 cp = np.zeros(nc)
                 dp = np.zeros(nc)
-                
-                cp[0] = c_diag[0] / b[0]
-                dp[0] = d_rhs[0] / b[0]
-                
+                denom = b[0] if b[0] != 0 else 1e-15
+                cp[0] = c_d[0] / denom
+                dp[0] = d_rhs[0] / denom
                 for i in range(1, nc):
-                    denom = b[i] - a[i]*cp[i-1]
-                    if denom == 0: denom = 1e-15
-                    cp[i] = c_diag[i] / denom
-                    dp[i] = (d_rhs[i] - a[i]*dp[i-1]) / denom
-                
+                    denom = b[i] - a[i] * cp[i-1]
+                    if denom == 0:
+                        denom = 1e-15
+                    cp[i] = c_d[i] / denom if i < nc - 1 else 0.0
+                    dp[i] = (d_rhs[i] - a[i] * dp[i-1]) / denom
                 C_new = np.zeros(nc)
                 C_new[nc-1] = dp[nc-1]
                 for i in range(nc-2, -1, -1):
-                    C_new[i] = dp[i] - cp[i]*C_new[i+1]
-                
+                    C_new[i] = dp[i] - cp[i] * C_new[i+1]
                 C_iter = C_new.copy()
-                
-            np.clip(C_new, prop.min_val, prop.max_val, out=C_new)
-            prop.values = C_new
+            # Clip to bounds and assign
+            np.clip(C_iter, prop.min_val, prop.max_val, out=C_iter)
+            prop.values = C_iter
 
     def apply_kinetics(self, dt):
         temp = self.constituents["Temperature"].values if "Temperature" in self.constituents else np.full(self.grid.nc, 20.0)
@@ -541,6 +513,7 @@ class RiverModel:
         slope = self.grid.river_slope
         wind = self.atmos.wind_speed
         
+        # VBA Formula: K = (1/H) * 0.142 * (|W|+0.1) * (S + 1e-5) [1/s]
         k_reaeration = (1.0/h) * 0.142 * (abs(wind) + 0.1) * (slope + 1e-5)
         
         for p in [do_prop, co2_prop]:
@@ -548,8 +521,10 @@ class RiverModel:
                 gas = "O2" if p.name=="DO" else "CO2"
                 for i in range(self.grid.nc):
                     cs = self.calculate_saturation(temp[i], gas)
+                    # Implicit linear update for stability: (C + dt*K*Cs)/(1+dt*K)
                     p.values[i] = (p.values[i] + dt * k_reaeration * cs) / (1.0 + dt * k_reaeration)
 
+        # Apply Clamping
         for name, prop in self.constituents.items():
             np.clip(prop.values, prop.min_val, prop.max_val, out=prop.values)
 
