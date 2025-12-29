@@ -4,19 +4,150 @@ import numpy as np
 import matplotlib.pyplot as plt
 from river_core import RiverModel
 import math
+import json
+import base64
+import zlib
+
+# =============================================================================
+# PER-USER PERSISTENCE (Option A: URL query param)
+# Stores a compressed JSON payload in ?cfg=... so each user/browser keeps its
+# own last inputs across reloads/reopens (no server-side storage required).
+# =============================================================================
+
+def _encode_state(payload: dict) -> str:
+    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    comp = zlib.compress(raw, level=9)
+    return base64.urlsafe_b64encode(comp).decode("ascii")
+
+
+def _decode_state(s: str) -> dict:
+    comp = base64.urlsafe_b64decode(s.encode("ascii"))
+    raw = zlib.decompress(comp)
+    return json.loads(raw.decode("utf-8"))
+
+
+def _state_from_url() -> dict | None:
+    qp = st.query_params
+    if "cfg" not in qp:
+        return None
+    try:
+        return _decode_state(qp["cfg"])
+    except Exception:
+        return None
+
+
+def _write_state_to_url(payload: dict) -> None:
+    st.query_params["cfg"] = _encode_state(payload)
 
 st.set_page_config(page_title="River Water Quality Model", layout="wide")
 
-# Initialize Session State Defaults if not present
+DEFAULT_CONFIG = {
+    'sim_duration': 1.0, 'dt': 200.0, 'dt_print': 3600.0,
+    'L': 12000.0, 'nc': 300, 'width': 100.0, 'depth': 0.5,
+    'slope': 0.0001, 'manning': 0.025, 'Q_in': 12.515, 'diff_in': 1.0,
+    'air_temp': 20.0, 'wind': 0.0, 'humidity': 80.0, 'h_min': 6.9,
+    'sky_temp': -40.0, 'solar': 1370.0, 'cloud': 0.0, 'lat': 38.0,
+    'sunrise': 6.0, 'sunset': 18.0,
+}
+
+DEFAULT_WIDGETS = {
+    **DEFAULT_CONFIG,
+    # Sidebar controls
+    "time_disc": "semi",
+    "advection": "Yes",
+    "adv_type": "QUICK",
+    "quick_ratio": 4.0,
+    "diffusion": "Yes",
+    # Generic
+    "generic_unit": "UFC/100ml",
+    "generic_decay_model": "T90 (Hours)",
+    "generic_decay_value": 10.0,
+}
+
+
+def _is_jsonable(v) -> bool:
+    try:
+        json.dumps(v)
+        return True
+    except Exception:
+        return False
+
+
+def _restore_persisted_state() -> None:
+    """Restore persisted state from URL into st.session_state (must run before widgets)."""
+    payload = _state_from_url()
+    if not payload or not isinstance(payload, dict):
+        return
+
+    widgets = payload.get("widgets", {})
+    if isinstance(widgets, dict):
+        for k, v in widgets.items():
+            if k not in st.session_state:
+                st.session_state[k] = v
+
+    # Restore tables
+    tables = payload.get("tables", {})
+    if isinstance(tables, dict):
+        for k, rows in tables.items():
+            try:
+                if k not in st.session_state and isinstance(rows, list):
+                    st.session_state[k] = pd.DataFrame(rows)
+            except Exception:
+                pass
+
+    # Special case: discharges
+    if "dis_df" in payload and "dis_df" not in st.session_state:
+        try:
+            st.session_state["dis_df"] = pd.DataFrame(payload["dis_df"])
+        except Exception:
+            pass
+
+
+def _collect_persistable_state() -> dict:
+    """Collect a compact, JSON-safe snapshot of user inputs (excluding results)."""
+    widgets = {}
+    tables = {}
+
+    for k, v in st.session_state.items():
+        if k in {"results", "grid"}:
+            continue
+
+        # DataFrames: store only for known editors
+        if isinstance(v, pd.DataFrame):
+            if k == "dis_df" or k.endswith("_ic_ed"):
+                tables[k] = v.to_dict("records")
+            continue
+        if isinstance(v, np.ndarray):
+            continue
+
+        # JSON-safe primitives
+        if isinstance(v, (str, int, float, bool, type(None), list, dict)) and _is_jsonable(v):
+            widgets[k] = v
+
+    payload = {"v": 1, "widgets": widgets, "tables": tables}
+
+    # Keep dis_df also at top-level for backwards compatibility
+    if "dis_df" in tables:
+        payload["dis_df"] = tables["dis_df"]
+
+    return payload
+
+
+# Restore per-user state from URL before creating any widgets
+_restore_persisted_state()
+
+# Seed missing widget defaults
+for _k, _v in DEFAULT_WIDGETS.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
+# Keep the older config dict (used as initial widget defaults in several places)
 if 'config' not in st.session_state:
-    st.session_state['config'] = {
-        'sim_duration': 1.0, 'dt': 200.0, 'dt_print': 3600.0,
-        'L': 12000.0, 'nc': 300, 'width': 100.0, 'depth': 0.5,
-        'slope': 0.0001, 'manning': 0.025, 'Q_in': 12.515, 'diff_in': 1.0,
-        'air_temp': 20.0, 'wind': 0.0, 'humidity': 80.0, 'h_min': 6.9,
-        'sky_temp': -40.0, 'solar': 1370.0, 'cloud': 0.0, 'lat': 38.0,
-        'sunrise': 6.0, 'sunset': 18.0
-    }
+    st.session_state['config'] = DEFAULT_CONFIG.copy()
+for _k in DEFAULT_CONFIG.keys():
+    # Prefer current widget state if present
+    if _k in st.session_state:
+        st.session_state['config'][_k] = st.session_state[_k]
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -37,18 +168,35 @@ dt_print_val = max(st.session_state['config']['dt_print'], dt)
 dt_print = st.sidebar.number_input("Print Interval (s)", value=dt_print_val, min_value=dt, step=100.0, key="dt_print")
 
 st.sidebar.divider()
-time_disc = st.sidebar.selectbox("Discretisation", ["semi", "imp", "exp"])
-advection = st.sidebar.selectbox("Advection", ["Yes", "No"])
+time_disc = st.sidebar.selectbox("Discretisation", ["semi", "imp", "exp"], key="time_disc")
+advection = st.sidebar.selectbox("Advection", ["Yes", "No"], key="advection")
 adv_type = "QUICK"
 quick_ratio = 4.0
 
-adv_type = st.sidebar.selectbox("Advection Type / Scheme", ["QUICK", "Upwind", "Central"])
+adv_type = st.sidebar.selectbox("Advection Type / Scheme", ["QUICK", "Upwind", "Central"], key="adv_type")
 if adv_type == "QUICK":
-    quick_ratio = st.sidebar.number_input("QUICK UP Ratio", value=4.0, step=0.1)
+    quick_ratio = st.sidebar.number_input("QUICK UP Ratio", value=float(st.session_state.get("quick_ratio", 4.0)), step=0.1, key="quick_ratio")
 
-diffusion = st.sidebar.selectbox("Diffusion", ["Yes", "No"])
+diffusion = st.sidebar.selectbox("Diffusion", ["Yes", "No"], key="diffusion")
 
 st.sidebar.divider()
+col_save, col_reset = st.sidebar.columns(2)
+save_btn = col_save.button("Save settings")
+reset_btn = col_reset.button("Reset link")
+
+if save_btn:
+    _write_state_to_url(_collect_persistable_state())
+    st.sidebar.success("Saved")
+
+if reset_btn:
+    st.query_params.clear()
+    # Clearing session_state entirely can break widgets mid-run; instead, reload with defaults.
+    for k in list(st.session_state.keys()):
+        if k not in {"config"}:
+            st.session_state.pop(k, None)
+    st.session_state['config'] = DEFAULT_CONFIG.copy()
+    st.rerun()
+
 run_btn = st.sidebar.button("Run Simulation", type="primary")
 
 # =============================================================================
@@ -187,10 +335,10 @@ with main_tabs[3]:
         if cfg["active"]:
             st.caption("Fluxes")
             c1, c2, c3, c4 = st.columns(4)
-            use_surf = c1.checkbox("Surface Flux", True)
-            use_sens = c2.checkbox("Sensible", True)
-            use_lat = c3.checkbox("Latent", True)
-            use_rad = c4.checkbox("Radiative", True)
+            use_surf = c1.checkbox("Surface Flux", True, key="Temperature_surf")
+            use_sens = c2.checkbox("Sensible", True, key="Temperature_sens")
+            use_lat = c3.checkbox("Latent", True, key="Temperature_lat")
+            use_rad = c4.checkbox("Radiative", True, key="Temperature_rad")
             cfg.update({"surf": use_surf, "sens": use_sens, "lat": use_lat, "rad": use_rad})
         configs["Temperature"] = cfg
 
@@ -206,14 +354,14 @@ with main_tabs[3]:
         if cfg["active"]:
             st.caption("Kinetics")
             c1, c2 = st.columns(2)
-            use_log = c1.checkbox("Use Logistic Formulation", False)
-            use_ana = c2.checkbox("Consider Anaerobic", False)
-            k_decay = st.number_input("Decay Rate (1/day)", 0.3, step=0.01)
-            half_sat = st.number_input("O2 Semi-Sat Conc (mg/L)", 0.5, step=0.1)
+            use_log = c1.checkbox("Use Logistic Formulation", False, key="BOD_use_log")
+            use_ana = c2.checkbox("Consider Anaerobic", False, key="BOD_use_ana")
+            k_decay = st.number_input("Decay Rate (1/day)", 0.3, step=0.01, key="BOD_k_decay")
+            half_sat = st.number_input("O2 Semi-Sat Conc (mg/L)", 0.5, step=0.1, key="BOD_half_sat")
             k_grow = 0.0; max_log = 0.0
             if use_log:
-                k_grow = st.number_input("Logistic Growth Rate", 0.5, step=0.1)
-                max_log = st.number_input("Max Val Logistic", 50.0, step=1.0)
+                k_grow = st.number_input("Logistic Growth Rate", 0.5, step=0.1, key="BOD_k_grow")
+                max_log = st.number_input("Max Val Logistic", 50.0, step=1.0, key="BOD_max_log")
             cfg.update({"log": use_log, "ana": use_ana, "k_dec": k_decay, "k_gro": k_grow, "max_log": max_log, "half": half_sat})
         configs["BOD"] = cfg
 
@@ -225,11 +373,15 @@ with main_tabs[3]:
         configs["CO2"] = cfg
 
     with c_tabs[4]: # Generic
-        unit_gen = st.text_input("Unit", "UFC/100ml")
+        unit_gen = st.text_input("Unit", "UFC/100ml", key="generic_unit")
         cfg = common_inputs("Generic", unit_gen, 0.0)
         if cfg["active"]:
-            mode = st.selectbox("Decay Model", ["T90 (Hours)", "Half-Life (Days)", "T-Duplicate (Days)", "Rate (1/day)"])
-            val = st.number_input("Parameter Value", 10.0, step=1.0)
+            mode = st.selectbox(
+                "Decay Model",
+                ["T90 (Hours)", "Half-Life (Days)", "T-Duplicate (Days)", "Rate (1/day)"],
+                key="generic_decay_model",
+            )
+            val = st.number_input("Parameter Value", 10.0, step=1.0, key="generic_decay_value")
             k_sec = 0.0
             if mode == "T90 (Hours)" and val > 0: k_sec = 2.302585 / (val * 3600)
             elif mode == "Half-Life (Days)" and val > 0: k_sec = 0.693147 / (val * 86400)
@@ -308,6 +460,12 @@ if run_btn:
         res = model.run()
         st.session_state['results'] = res
         st.session_state['grid'] = model.grid.xc
+        # Persist latest user inputs automatically whenever a simulation is run.
+        # This is per-user (stored in the URL query parameter).
+        try:
+            _write_state_to_url(_collect_persistable_state())
+        except Exception:
+            pass
         st.success("Simulation Complete")
         st.rerun()
 
@@ -320,7 +478,7 @@ with main_tabs[4]:
         xc = st.session_state['grid']
         times = res['times']
         
-        tab1, tab2 = st.tabs(["Profiles", "Time Series"])
+        tab1, tab2, tab3 = st.tabs(["Profiles", "Time Series", "Space-Time Tables"])
         
         with tab1:
             if len(times) > 0:
@@ -328,23 +486,102 @@ with main_tabs[4]:
                 t_val = times[t_idx]
                 for name in configs.keys():
                     if configs[name]["active"] and name in res and len(res[name]) > 0:
+                        y = np.asarray(res[name][t_idx])
+                        if len(y) != len(xc):
+                            st.error(f"Plot error for {name}: profile length {len(y)} does not match grid length {len(xc)}")
+                            continue
                         fig, ax = plt.subplots(figsize=(8,3))
-                        ax.plot(xc, res[name][t_idx])
+                        ax.plot(xc, y)
                         ax.set_title(f"{name} at T={t_val:.3f}d")
                         ax.set_xlabel("Distance (m)")
+                        ax.set_ylabel(configs[name].get("unit", ""))
                         ax.grid(True, alpha=0.3)
                         st.pyplot(fig)
                     
         with tab2:
             if len(xc) > 0:
-                x_sel = st.selectbox("Location", xc)
-                x_idx = np.argmin(np.abs(xc - x_sel))
+                sel_mode = st.radio("Select location by", ["Cell index", "Distance"], horizontal=True, key="ts_loc_mode")
+                if sel_mode == "Cell index":
+                    cell_1based = st.slider("Cell index", 1, len(xc), 1, key="ts_cell_index")
+                    x_idx = int(cell_1based) - 1
+                    x_sel = float(xc[x_idx])
+                else:
+                    step = float(xc[1] - xc[0]) if len(xc) > 1 else 1.0
+                    dist_in = st.number_input(
+                        "Location (m)",
+                        value=float(xc[len(xc)//2]),
+                        min_value=float(xc[0]),
+                        max_value=float(xc[-1]),
+                        step=step,
+                        key="ts_distance",
+                    )
+                    x_idx = int(np.argmin(np.abs(np.asarray(xc) - dist_in)))
+                    x_sel = float(xc[x_idx])
                 for name in configs.keys():
                     if configs[name]["active"] and name in res and len(res[name]) > 0:
                         fig, ax = plt.subplots(figsize=(8,3))
-                        ts = [step[x_idx] for step in res[name]]
+                        # Ensure we sample consistent array shapes
+                        series = []
+                        for step_arr in res[name]:
+                            step_arr = np.asarray(step_arr)
+                            if x_idx >= len(step_arr):
+                                series = None
+                                break
+                            series.append(float(step_arr[x_idx]))
+                        if series is None:
+                            st.error(f"Plot error for {name}: time-series index {x_idx} out of bounds")
+                            continue
+                        ts = series
                         ax.plot(times, ts)
                         ax.set_title(f"{name} at X={x_sel:.1f}m")
                         ax.set_xlabel("Time (Days)")
+                        ax.set_ylabel(configs[name].get("unit", ""))
                         ax.grid(True, alpha=0.3)
                         st.pyplot(fig)
+
+        with tab3:
+            active_names = [
+                n for n in configs.keys()
+                if configs[n].get("active") and n in res and isinstance(res.get(n), list) and len(res[n]) > 0
+            ]
+
+            if not active_names:
+                st.info("No active constituents were simulated; enable at least one constituent to view space-time tables.")
+            else:
+                name = st.selectbox("Constituent", active_names, key="st_table_const")
+                mat = np.vstack([np.asarray(v) for v in res[name]])  # (nt, nc)
+
+                c1, c2, c3 = st.columns(3)
+                max_cols = int(c1.number_input("Max columns", value=120, min_value=10, max_value=2000, step=10, key="st_table_max_cols"))
+                max_rows = int(c2.number_input("Max rows", value=200, min_value=10, max_value=5000, step=10, key="st_table_max_rows"))
+                dist_unit = c3.radio("Distance unit", ["m", "km"], horizontal=True, key="st_table_dist_unit")
+
+                col_step = max(1, int(np.ceil(mat.shape[1] / max_cols)))
+                row_step = max(1, int(np.ceil(mat.shape[0] / max_rows)))
+
+                mat_ds = mat[::row_step, ::col_step]
+                times_ds = np.asarray(times)[::row_step]
+                xc_ds = np.asarray(xc)[::col_step]
+
+                if dist_unit == "km":
+                    cols = [f"{x/1000:.3f}" for x in xc_ds]
+                    col_label = "Distance (km)"
+                else:
+                    cols = [f"{x:.1f}" for x in xc_ds]
+                    col_label = "Distance (m)"
+
+                df = pd.DataFrame(mat_ds, index=[f"{t:.6f}" for t in times_ds], columns=cols)
+                df.index.name = "Time (days)"
+
+                st.caption(
+                    f"Table is downsampled for readability: every {row_step}th time step and every {col_step}th cell. "
+                    f"Columns are {col_label}."
+                )
+                st.dataframe(df, use_container_width=True, height=520)
+
+                st.download_button(
+                    "Download CSV",
+                    df.to_csv().encode("utf-8"),
+                    file_name=f"{name}_space_time_table.csv",
+                    mime="text/csv",
+                )
