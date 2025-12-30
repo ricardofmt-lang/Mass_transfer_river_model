@@ -49,17 +49,17 @@ def save_config_to_url(cfg: dict) -> None:
 
 # Default configuration values
 DEFAULT_CONFIG = {
-    'sim_duration': 2.0,
-    'dt': 500.0,
-    'dt_print': 2500.0,
-    'L': 10000.0,
+    'sim_duration': 1.0,
+    'dt': 200.0,
+    'dt_print': 3600.0,
+    'L': 12000.0,
     'nc': 300,
-    'width': 5.0,
+    'width': 100.0,
     'depth': 0.5,
     'slope': 0.0001,
     'manning': 0.025,
-    'Q_in': 0.1,
-    'diff_in': 4,
+    'Q_in': 12.515,
+    'diff_in': 1.0,
     'air_temp': 20.0,
     'wind': 0.0,
     'humidity': 80.0,
@@ -108,6 +108,55 @@ diffusion = st.sidebar.selectbox("Diffusion", ["Yes", "No"])
 
 st.sidebar.divider()
 run_btn = st.sidebar.button("Run Simulation", type="primary")
+
+# -----------------------------------------------------------------------------
+# SESSION MANAGEMENT
+#
+# Provide explicit Save and Reset buttons so users can persist the
+# current configuration (without running a simulation) or reset back
+# to the default configuration.  Saving writes the configuration to
+# the URL query parameter and updates the internal session state.  Reset
+# overwrites the session state with DEFAULT_CONFIG and updates the URL.
+# -----------------------------------------------------------------------------
+with st.sidebar.expander("Session Management", expanded=False):
+    # Save current settings into session state and persist to URL
+    if st.button("Save Settings"):
+        # Update session_state['config'] from the current widget values
+        st.session_state['config'] = {
+            'sim_duration': st.session_state.get('sim_duration', DEFAULT_CONFIG['sim_duration']),
+            'dt': st.session_state.get('dt', DEFAULT_CONFIG['dt']),
+            'dt_print': st.session_state.get('dt_print', DEFAULT_CONFIG['dt_print']),
+            'L': st.session_state.get('L', DEFAULT_CONFIG['L']),
+            'nc': int(st.session_state.get('nc', DEFAULT_CONFIG['nc'])),
+            'width': st.session_state.get('width', DEFAULT_CONFIG['width']),
+            'depth': st.session_state.get('depth', DEFAULT_CONFIG['depth']),
+            'slope': st.session_state.get('slope', DEFAULT_CONFIG['slope']),
+            'manning': st.session_state.get('manning', DEFAULT_CONFIG['manning']),
+            'Q_in': st.session_state.get('Q_in', DEFAULT_CONFIG['Q_in']),
+            'diff_in': st.session_state.get('diff_in', DEFAULT_CONFIG['diff_in']),
+            'air_temp': st.session_state.get('air_temp', DEFAULT_CONFIG['air_temp']),
+            'wind': st.session_state.get('wind', DEFAULT_CONFIG['wind']),
+            'humidity': st.session_state.get('humidity', DEFAULT_CONFIG['humidity']),
+            'h_min': st.session_state.get('h_min', DEFAULT_CONFIG['h_min']),
+            'sky_temp': st.session_state.get('sky_temp', DEFAULT_CONFIG['sky_temp']),
+            'solar': st.session_state.get('solar', DEFAULT_CONFIG['solar']),
+            'cloud': st.session_state.get('cloud', DEFAULT_CONFIG['cloud']),
+            'lat': st.session_state.get('lat', DEFAULT_CONFIG['lat']),
+            'sunrise': st.session_state.get('sunrise', DEFAULT_CONFIG['sunrise']),
+            'sunset': st.session_state.get('sunset', DEFAULT_CONFIG['sunset']),
+        }
+        save_config_to_url(st.session_state['config'])
+        st.success("Settings saved to URL")
+        st.experimental_rerun()
+    # Reset to default configuration and persist
+    if st.button("Reset Settings"):
+        st.session_state['config'] = DEFAULT_CONFIG.copy()
+        # Replace widget state with defaults
+        for k, v in DEFAULT_CONFIG.items():
+            st.session_state[k] = v
+        save_config_to_url(st.session_state['config'])
+        st.success("Settings reset to default")
+        st.experimental_rerun()
 
 # =============================================================================
 # MAIN UI
@@ -289,10 +338,16 @@ with main_tabs[3]:
             mode = st.selectbox("Decay Model", ["T90 (Hours)", "Half-Life (Days)", "T-Duplicate (Days)", "Rate (1/day)"])
             val = st.number_input("Parameter Value", 10.0, step=1.0)
             k_sec = 0.0
-            if mode == "T90 (Hours)" and val > 0: k_sec = 2.302585 / (val * 3600)
-            elif mode == "Half-Life (Days)" and val > 0: k_sec = 0.693147 / (val * 86400)
-            elif mode == "T-Duplicate (Days)" and val > 0: k_sec = -0.693147 / (val * 86400) 
-            elif mode == "Rate (1/day)": k_sec = val / 86400
+            # Use VBA sign conventions: Ln(0.1) is negative, Ln(0.5) is negative, Ln(2) is positive
+            if mode == "T90 (Hours)" and val > 0:
+                k_sec = math.log(0.1) / (val * 3600.0)
+            elif mode == "Half-Life (Days)" and val > 0:
+                k_sec = math.log(0.5) / (val * 86400.0)
+            elif mode == "T-Duplicate (Days)" and val > 0:
+                k_sec = math.log(2.0) / (val * 86400.0)
+            elif mode == "Rate (1/day)":
+                # Rate (1/day) is provided as per day; convert to per second
+                k_sec = val / 86400.0
             cfg["k"] = k_sec
         configs["Generic"] = cfg
 
@@ -304,13 +359,8 @@ if run_btn:
     with st.spinner("Calculating..."):
         model.setup_grid(L, int(nc), width, depth, slope, manning, Q_in, diff_in)
         
-        sky_t_val = sky_temp
-        sky_imp = True
-        if sky_temp == -40: 
-            sky_t_val = -40
-            sky_imp = False
-            
-        model.setup_atmos(air_temp, wind, humidity, solar, lat, cloud, sunrise, sunset, h_min, sky_t_val, sky_imp)
+        # Sky temperature must always be imposed; no automatic calculation
+        model.setup_atmos(air_temp, wind, humidity, solar, lat, cloud, sunrise, sunset, h_min, sky_temp, True)
         
         model.config.duration_days = sim_duration
         model.config.dt = dt
