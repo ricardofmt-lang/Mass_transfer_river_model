@@ -119,17 +119,23 @@ class RiverModel:
         self.flow.velocity = discharge / self.grid.area_vertical if self.grid.area_vertical > 0 else 0.0
 
     def setup_atmos(self, temp, wind, humidity, solar, lat, cloud, sunrise, sunset, h_min, sky_temp, sky_imposed):
+        # store atmospheric parameters.  Humidity and cloud cover are
+        # specified by the user as percentages (0–100).  Convert them
+        # to fractions for internal use.  Always impose sky temperature
+        # (no automatic computation) — the VBA code treats any defined
+        # sky temperature as imposed.
         self.atmos.air_temp = temp
         self.atmos.wind_speed = wind
-        self.atmos.humidity = humidity
+        self.atmos.humidity = humidity / 100.0 if humidity > 1.0 else humidity
         self.atmos.solar_constant = solar
         self.atmos.latitude = lat
-        self.atmos.cloud_cover = cloud
+        self.atmos.cloud_cover = cloud / 100.0 if cloud > 1.0 else cloud
         self.atmos.sunrise_hour = sunrise
         self.atmos.sunset_hour = sunset
         self.atmos.h_min = h_min
         self.atmos.sky_temp = sky_temp
-        self.atmos.sky_temp_imposed = sky_imposed
+        # always impose sky temperature; per user request the sky temperature is mandatory
+        self.atmos.sky_temp_imposed = True
 
     def add_constituent(self, name, active, unit, 
                         init_mode="Default", default_val=0.0, 
@@ -193,259 +199,652 @@ class RiverModel:
         return (p_atm * kh) * mw / 1000.0
 
     def calculate_heat_fluxes(self, water_temp, time_sec):
-        sigma = 5.67e-8
+        """
+        Compute heat flux components for a water parcel.
+
+        This routine aims to mirror the VBA implementation found in the original
+        Excel macros.  It returns a dictionary with the solar, sensible,
+        latent and radiative heat fluxes (in W/m²).  The calling code is
+        responsible for dividing by (rho*cp*depth) and multiplying by dt
+        when updating temperature.  Humidity and cloud cover are expected
+        to be supplied as fractions (0–1) at the point of call.  The sky
+        temperature is always imposed by user choice; there is no automatic
+        computation of an effective sky temperature in this model.
+        """
+
+        # physical constants
+        sigma = 5.67e-8  # Stefan–Boltzmann constant (W/m²·K⁴)
+        rho = 1000.0     # water density (kg/m³)
+        cp = 4180.0      # water specific heat (J/kg·K)
         kelvin = 273.15
+
+        # convert temperatures to Kelvin
         T_w_k = water_temp + kelvin
         T_a_k = self.atmos.air_temp + kelvin
-        
-        Q_sn, Q_an, Q_br, Q_h, Q_e = 0.0, 0.0, 0.0, 0.0, 0.0
-        
-        # Solar
-        hour = (time_sec / 3600.0) % 24
+
+        # convert humidity and cloud cover to fractions (0–1) for flux computation
+        hum = self.atmos.humidity if self.atmos.humidity <= 1.0 else self.atmos.humidity / 100.0
+        cloud = self.atmos.cloud_cover if self.atmos.cloud_cover <= 1.0 else self.atmos.cloud_cover / 100.0
+
+        # Solar radiation as in VBA: uses cos(latitude), atmospheric absorption 0.23,
+        # and a cloud attenuation of (1 - 0.75 * cloud³).  Only applies between
+        # sunrise and sunset hours.  time_sec is simulation time in seconds.
+        hour = (time_sec / 3600.0) % 24.0
+        solar_flux = 0.0
         if self.atmos.sunrise_hour < hour < self.atmos.sunset_hour:
             day_len = self.atmos.sunset_hour - self.atmos.sunrise_hour
             norm_time = (hour - self.atmos.sunrise_hour) / day_len
-            Q_max = self.atmos.solar_constant * (1 - 0.65 * (self.atmos.cloud_cover/100)**2)
-            Q_sn = Q_max * math.sin(math.pi * norm_time)
-        
-        # Atmos
+            lat_rad = math.radians(self.atmos.latitude)
+            # instantaneous solar after atmospheric absorption (0.23 per VBA)
+            IM = self.atmos.solar_constant * math.cos(lat_rad) * (1.0 - 0.23)
+            # cloud attenuation
+            factor_cloud = (1.0 - 0.75 * (cloud ** 3))
+            # diurnal sinusoid
+            solar_flux = factor_cloud * IM * math.sin(math.pi * norm_time)
+
+        # sensible heat flux: cB * h(wind, h_min) * (air_temp - water_temp)
+        # where cB = 0.62 (mb/K) and h = h_min + 0.345 * wind²
+        cB = 0.62
+        h_coeff = self.atmos.h_min + 0.345 * (self.atmos.wind_speed ** 2)
+        sensible = cB * h_coeff * (self.atmos.air_temp - water_temp)
+
+        # latent heat flux: -h * (Es(Tw) - humidity * Es(Ta))
+        # Es(T) returns saturation vapour pressure in Pa; humidity is fraction.
+        def es_func(T):
+            # Saturation vapour pressure (Pa) from VBA: A=6.112, B=17.67, C=243.5
+            A = 6.112
+            B = 17.67
+            C = 243.5
+            return A * math.exp(B * T / (T + C)) * 100.0  # convert from mb to Pa
+
+        es_w = es_func(water_temp)
+        es_a = es_func(self.atmos.air_temp)
+        ea = hum * es_a
+        latent = -h_coeff * (es_w - ea)
+        # cap positive evaporation flux at zero (per VBA latent flux check)
+        if latent > 0.0 and (es_w - ea) > 0.0:
+            latent = 0.0
+
+        # radiative longwave flux: depends on sky temperature (always imposed)
         if self.atmos.sky_temp_imposed:
-            T_sky = self.atmos.sky_temp + kelvin
+            T_sky_k = self.atmos.sky_temp + kelvin
+            radiative = 0.97 * sigma * ((T_sky_k ** 4) - (T_w_k ** 4))
         else:
-            T_sky = 0.0552 * (T_a_k**1.5)
-        Q_an = 0.97 * sigma * (T_sky**4)
-        
-        # Back
-        Q_br = 0.97 * sigma * (T_w_k**4)
-        
-        # Sensible/Latent
-        es_a = 6.11 * 10**((7.5 * self.atmos.air_temp)/(237.3 + self.atmos.air_temp))
-        es_w = 6.11 * 10**((7.5 * water_temp)/(237.3 + water_temp))
-        ea = es_a * (self.atmos.humidity / 100.0)
-        h_conv = self.atmos.h_min + 3.0 * self.atmos.wind_speed 
-        Q_h = h_conv * (water_temp - self.atmos.air_temp)
-        Q_e = 3.0 * self.atmos.wind_speed * (es_w - ea)
-        if Q_e < 0 and es_w < ea: Q_e = 0
-        
-        return {"solar": 0.9 * Q_sn, "atmos": Q_an, "back": -Q_br, "sensible": -Q_h, "latent": -Q_e}
+            # Use empirical formulation when no imposed sky temperature; keep old behaviour
+            radiative = 0.97 * sigma * ((9.37e-6 * (T_a_k ** 6) * (1.0 + 0.17 * (cloud ** 2))) - (T_w_k ** 4))
+
+        return {
+            "solar": solar_flux,
+            "sensible": sensible,
+            "latent": latent,
+            "radiative": radiative,
+        }
 
     def apply_discharges(self, dt_split):
+        """
+        Mix point discharges into the corresponding grid cell over a half time step.
+
+        In the original VBA code, discharges are applied explicitly by mass
+        balance: (C V + Q C_in dt) / (V + Q dt).  This implementation
+        replicates that behaviour rather than the exponential relaxation used
+        previously.
+
+        dt_split is the half-step duration (s).  For stability, this function
+        should be called twice per full time step: once before transport and
+        once after.
+        """
         vol_cell = self.grid.area_vertical * self.grid.dx
         for d in self.discharges:
             idx = d["cell"]
-            q = d["flow"]
-            if q <= 0: continue
-            
-            rate = q / vol_cell
-            factor = math.exp(-rate * dt_split)
-            
+            q = d.get("flow", 0.0)
+            if q <= 0:
+                continue
+            # volume ratio for this half step
+            vol_ratio = q * dt_split
+            denom = vol_cell + vol_ratio
+            if denom <= 0:
+                continue
+            # temperature
             if "Temperature" in self.constituents:
                 T_c = self.constituents["Temperature"].values[idx]
-                T_in = d["temp"]
-                self.constituents["Temperature"].values[idx] = T_in + (T_c - T_in) * factor
-                
+                T_in = d.get("temp", T_c)
+                self.constituents["Temperature"].values[idx] = (T_c * vol_cell + T_in * vol_ratio) / denom
+            # scalar constituents (BOD, DO, CO2, Generic)
             for name in ["BOD", "DO", "CO2", "Generic"]:
                 if name in self.constituents:
                     C_c = self.constituents[name].values[idx]
-                    key = name.lower() 
-                    val_in = d.get(key, 0.0)
-                    self.constituents[name].values[idx] = val_in + (C_c - val_in) * factor
+                    key = name.lower()
+                    val_in = d.get(key, C_c)
+                    self.constituents[name].values[idx] = (C_c * vol_cell + val_in * vol_ratio) / denom
 
     def solve_transport(self, dt):
-        """
-        Advance all active constituents by one transport step.  This routine
-        accounts for diffusion and advection using a finite-volume approach.
-        For purely diffusive problems (i.e., advection turned off) it
-        reproduces the same coefficient structure used in the original VBA
-        implementation.  Semi‑implicit (Crank–Nicolson), implicit and
-        explicit time discretisations are supported via the time_discretisation
-        setting.  When advection is active the original QUICK/Upwind/Central
-        schemes are retained.
-        """
+        # The core transport solver has been completely rewritten to
+        # faithfully reproduce the VBA implementation.  It constructs
+        # coefficient arrays for diffusion and advection and then
+        # invokes explicit, semi-implicit or fully implicit solvers
+        # depending on the selected discretisation.  QUICK advection is
+        # supported with optional upwinding in steep gradient regions.
 
         u = self.flow.velocity if self.config.advection_active else 0.0
         D = self.flow.diffusivity if self.config.diffusion_active else 0.0
         dx = self.grid.dx
         nc = self.grid.nc
+        # diffusion and Courant numbers (per cell)
+        if dx > 0:
+            sigma = u * dt / dx
+            beta = D * dt / (dx * dx)
+        else:
+            sigma = 0.0
+            beta = 0.0
 
-        # dimensionless numbers
-        sigma = u * dt / dx
-        beta = D * dt / (dx**2)
+        # Precompute base coefficients for transport
+        # Arrays are zero-indexed here but map to 1-based arrays in VBA
+        base_A = np.zeros(nc)
+        base_B = np.zeros(nc)
+        base_e = np.zeros(nc)
+        base_f = np.zeros(nc)
+        base_g = np.zeros(nc)
+        # upwind counterparts for QUICK upwinding
+        up_b = np.zeros(nc)
+        up_e = np.zeros(nc)
+        up_f = np.zeros(nc)
 
-        # Determine theta based on chosen time discretisation
-        disc = self.config.time_discretisation.lower()
-        if disc == "exp":
-            theta = 0.0
-        elif disc == "imp":
-            theta = 1.0
-        else:  # semi or any other
-            theta = 0.5
+        # Populate diffusion contribution (Neumann zero-flux at boundaries)
+        if self.config.diffusion_active and beta != 0.0:
+            # left boundary
+            base_B[0] = 0.0
+            base_e[0] = -beta
+            base_f[0] = beta
+            base_g[0] = 0.0
+            base_A[0] = 0.0
+            # right boundary
+            base_B[nc-1] = beta
+            base_e[nc-1] = -beta
+            base_f[nc-1] = 0.0
+            base_g[nc-1] = 0.0
+            base_A[nc-1] = 0.0
+            # interior
+            for i in range(1, nc-1):
+                base_A[i] = 0.0
+                base_B[i] = beta
+                base_e[i] = -2.0 * beta
+                base_f[i] = beta
+                base_g[i] = 0.0
 
-        # Loop through constituents
+        # Populate advection contribution on top of diffusion
+        if self.config.advection_active and sigma != 0.0:
+            adv_type = self.config.advection_type.lower()
+            # quick_up always considered for QUICK advection
+            quick_up_ratio = self.config.quick_up_ratio
+            # base upwind arrays for QUICK upwinding
+            # Upwind only modifies B,e,f
+            if u > 0:
+                for i in range(nc):
+                    up_b[i] = base_B[i] + sigma
+                    up_e[i] = base_e[i] - sigma
+                    up_f[i] = base_f[i]
+            else:
+                for i in range(nc):
+                    up_b[i] = base_B[i]
+                    up_e[i] = base_e[i] + sigma
+                    up_f[i] = base_f[i] - sigma
+
+            if adv_type == "upwind":
+                # modify base_B, base_e, base_f for upwind
+                if u > 0:
+                    for i in range(nc):
+                        base_B[i] += sigma
+                        base_e[i] -= sigma
+                else:
+                    for i in range(nc):
+                        base_e[i] += sigma
+                        base_f[i] -= sigma
+            elif adv_type == "central":
+                # central differences; upwind at boundaries
+                for i in range(1, nc-1):
+                    base_B[i] += sigma / 2.0
+                    base_f[i] -= sigma / 2.0
+                # boundaries use upwind
+                if u > 0:
+                    base_B[0] += sigma
+                    base_e[0] -= sigma
+                    base_B[nc-1] += sigma
+                    base_e[nc-1] -= sigma
+                else:
+                    base_e[0] += sigma
+                    base_f[0] -= sigma
+                    base_e[nc-1] += sigma
+                    base_f[nc-1] -= sigma
+            elif adv_type == "quick":
+                # QUICK corrections: modifies base_A,B,e,f,g
+                if u > 0:
+                    # interior 1..n-2 (1-based 2..NC-1)
+                    for i in range(1, nc-1):
+                        base_A[i] -= (1.0/8.0) * sigma
+                        base_B[i] += (6.0/8.0) * sigma
+                        base_e[i] += (3.0/8.0) * sigma
+                        base_B[i] += (1.0/8.0) * sigma
+                        base_e[i] -= (6.0/8.0) * sigma
+                        base_f[i] -= (3.0/8.0) * sigma
+                    # left boundary (0 index)
+                    base_B[0] += (9.0/8.0) * sigma
+                    base_e[0] -= (6.0/8.0) * sigma
+                    base_f[0] -= (3.0/8.0) * sigma
+                    # right boundary (last)
+                    base_A[nc-1] -= (1.0/8.0) * sigma
+                    base_B[nc-1] += (6.0/8.0) * sigma
+                    base_e[nc-1] -= (5.0/8.0) * sigma
+                    # base_f[nc-1] already includes diffusion; advective right face term is zero per VBA
+                else:
+                    # u < 0
+                    for i in range(1, nc-1):
+                        base_B[i] += (3.0/8.0) * sigma
+                        base_e[i] += (6.0/8.0) * sigma
+                        base_f[i] -= (1.0/8.0) * sigma
+                        base_e[i] -= (3.0/8.0) * sigma
+                        base_f[i] -= (6.0/8.0) * sigma
+                        base_g[i] += (1.0/8.0) * sigma
+                    # left boundary
+                    base_e[0] += (5.0/8.0) * sigma
+                    base_f[0] -= (6.0/8.0) * sigma
+                    base_g[0] += (1.0/8.0) * sigma
+                    # right boundary
+                    base_B[nc-1] += (3.0/8.0) * sigma
+                    base_e[nc-1] += (6.0/8.0) * sigma
+                    base_f[nc-1] -= (9.0/8.0) * sigma
+                    # base_g[nc-1] remains 0
+            else:
+                # unsupported scheme: do nothing
+                pass
+
+        # Solve for each active constituent
         for name, prop in self.constituents.items():
             if not prop.active:
                 continue
-
-            # Copy old solution
+            # snapshot of old values
             C_old = prop.values.copy()
-
-            # If advection is disabled, construct coefficients as in the VBA
-            # implementation.  This branch handles diffusion–only problems and
-            # implements the boundary conditions used by the macros.  When
-            # advection is enabled we fall back on the original scheme (below).
-            if u == 0.0 and D > 0.0:
-                # Build coefficient arrays for diffusion
-                Bv = np.full(nc, beta)
-                ev = np.full(nc, -2.0*beta)
-                fv = np.full(nc, beta)
-                # Boundary adjustments (zero–flux at domain ends)
-                Bv[0] = 0.0; ev[0] = -beta; fv[0] = beta
-                Bv[nc-1] = beta; ev[nc-1] = -beta; fv[nc-1] = 0.0
-
-                # Allocate tridiagonal matrix and RHS
-                a = np.zeros(nc)
-                b = np.zeros(nc)
-                c_diag = np.zeros(nc)
-                d_rhs = np.zeros(nc)
-
-                # Precompute a, b, c and RHS for each cell
-                for i in range(nc):
-                    a[i] = -theta * Bv[i]
-                    b[i] = 1.0 - theta * ev[i]
-                    c_diag[i] = -theta * fv[i]
-                    # Start RHS with old value
-                    d_rhs[i] = C_old[i]
-
-                # Left boundary (i=0)
-                # For diffusion the macros use zero–flux at the boundaries.
-                # The boundary values specified by bc_left_val/bc_right_val
-                # are not used when advection is off.
-                # Update RHS for left node using VBA logic:
-                # d0 = C_old[0] + (1-theta)*(ev[0]*C_old[0] + fv[0]*C_old[1])
-                d_rhs[0] = C_old[0] + (1.0 - theta) * (ev[0] * C_old[0] + fv[0] * C_old[1])
-                # Right boundary (i=nc-1)
-                # dN = C_old[N] + (1-theta)*(Bv[N]*C_old[N-1] + ev[N]*C_old[N])
-                d_rhs[nc-1] = C_old[nc-1] + (1.0 - theta) * (Bv[nc-1] * C_old[nc-2] + ev[nc-1] * C_old[nc-1])
-                # Interior nodes
+            # boundary values for this property based on type
+            # fixed: given; zero gradient: equal to nearest cell; cyclic handled later
+            left_val = None
+            right_val = None
+            if prop.bc_left_type == "Cyclic":
+                # cyclic boundaries wrap around.  We'll handle this in the solver.
+                left_val = None
+            elif prop.bc_left_type == "Fixed":
+                left_val = prop.bc_left_val
+            else:  # ZeroGrad
+                left_val = C_old[0]
+            if prop.bc_right_type == "Cyclic":
+                right_val = None
+            elif prop.bc_right_type == "Fixed":
+                right_val = prop.bc_right_val
+            else:
+                right_val = C_old[-1]
+            # Determine solver type
+            disc = self.config.time_discretisation.lower()
+            adv_type = self.config.advection_type.lower()
+            # For QUICK, we may use upwind in steep gradient regions
+            quick_up = (adv_type == "quick")
+            quick_ratio = self.config.quick_up_ratio
+            # Build coefficient arrays for this property
+            if adv_type == "quick":
+                # Start with base arrays; copy to local arrays we can modify
+                A = base_A.copy()
+                B = base_B.copy()
+                e = base_e.copy()
+                f = base_f.copy()
+                g = base_g.copy()
+                # for QUICK upwind, b_up, e_up, f_up arrays computed above
+                # Determine if upwind should be used at each interior cell based on gradient test
+                quick_flags = np.zeros(nc, dtype=bool)
+                # Evaluate gradients based on current values
                 for i in range(1, nc-1):
-                    d_rhs[i] = C_old[i] + (1.0 - theta) * (Bv[i] * C_old[i-1] + ev[i] * C_old[i] + fv[i] * C_old[i+1])
-
-                # Solve tridiagonal system via Thomas algorithm
-                cp = np.zeros(nc)
-                dp = np.zeros(nc)
-                # Guard against zero division on b[0]
-                denom = b[0] if b[0] != 0 else 1e-15
-                cp[0] = c_diag[0] / denom
-                dp[0] = d_rhs[0] / denom
-                for i in range(1, nc):
-                    denom = b[i] - a[i] * cp[i-1]
-                    if denom == 0:
-                        denom = 1e-15
-                    cp[i] = c_diag[i] / denom if i < nc - 1 else 0.0
-                    dp[i] = (d_rhs[i] - a[i] * dp[i-1]) / denom
-                C_new = np.zeros(nc)
-                C_new[nc-1] = dp[nc-1]
-                for i in range(nc-2, -1, -1):
-                    C_new[i] = dp[i] - cp[i] * C_new[i+1]
-                # Clamp to bounds
-                np.clip(C_new, prop.min_val, prop.max_val, out=C_new)
-                prop.values = C_new
-                continue  # Finished with diffusion only case
-
-            # -----------------------------------------------------------------
-            # Advection/diffusion solver (original implementation)
-            # When advection is enabled or u != 0, we retain the existing
-            # upwind/central/QUICK discretisations with Picard iteration.  The
-            # original solver has been left largely intact and is executed
-            # whenever this branch is taken.
-            is_cyclic = (prop.bc_left_type == "Cyclic")
-            apply_cyclic_logic = is_cyclic and (u >= 0)
-
-            # Picard Iteration Count for Quasi‑Implicit QUICK
-            n_iter = 2 if self.config.advection_type == "QUICK" else 1
-
-            C_iter = C_old.copy()  # Iteration guess
-            for _ in range(n_iter):
-                a = np.zeros(nc)
-                b = np.zeros(nc)
-                c_d = np.zeros(nc)
-                d_rhs = np.zeros(nc)
-
-                # Internal nodes
+                    # compute A,B,C as in VBA
+                    # avoid index errors at extremes by clamping
+                    # convert to 0-based; A-> |C_old[i] - C_old[i-1]| etc.
+                    diff_prev = abs(C_old[i] - C_old[i-1])
+                    diff_next = abs(C_old[i+1] - C_old[i])
+                    diff_cross = abs(C_old[i+1] - C_old[i-1])
+                    # ensure threshold uses (1 + minimum) to allow test when min=0
+                    threshold = quick_ratio * (1.0 + prop.min_val)
+                    A_val = max(diff_prev, threshold)
+                    B_val = max(diff_next, threshold)
+                    C_val = max(diff_cross, threshold)
+                    if (abs(A_val - C_val) > quick_ratio * A_val) or (abs(B_val - C_val) > quick_ratio * B_val):
+                        quick_flags[i] = True
+                # modify coefficients for upwind where flagged
                 for i in range(1, nc-1):
-                    # Diffusion (central second‑order)
-                    a[i] = -theta * beta
-                    b[i] = 1.0 + 2.0 * theta * beta
-                    c_d[i] = -theta * beta
-                    d_rhs[i] = C_old[i] + (1.0 - theta) * beta * (C_old[i+1] - 2.0 * C_old[i] + C_old[i-1])
+                    if quick_flags[i]:
+                        # Upwind coefficients replace QUICK coefficients
+                        A[i] = 0.0
+                        B[i] = up_b[i]
+                        e[i] = up_e[i]
+                        f[i] = up_f[i]
+                        g[i] = 0.0
+                # Also handle first and last cells for upwind if flagged
+                # (flags[0] and flags[nc-1] are unused since no gradient test on boundaries)
+            else:
+                A = np.zeros(nc)
+                B = base_B.copy()
+                e = base_e.copy()
+                f = base_f.copy()
+                g = np.zeros(nc)
 
-                    # Advection
-                    if self.config.advection_active and u != 0.0:
-                        adv_scheme = self.config.advection_type
-                        use_upwind = False
-                        if adv_scheme == "QUICK":
-                            grad1 = C_iter[i] - C_iter[i-1]
-                            grad2 = C_iter[i+1] - C_iter[i]
-                            if grad1 * grad2 < 0:
-                                use_upwind = True
-                        if adv_scheme == "Central":
-                            a[i] -= theta * sigma / 2.0
-                            c_d[i] += theta * sigma / 2.0
-                            d_rhs[i] -= (1.0 - theta) * (sigma / 2.0) * (C_old[i+1] - C_old[i-1])
-                        elif adv_scheme == "Upwind" or use_upwind:
-                            a[i] -= theta * sigma
-                            b[i] += theta * sigma
-                            d_rhs[i] -= (1.0 - theta) * sigma * (C_old[i] - C_old[i-1])
-                        elif adv_scheme == "QUICK":
-                            # Implicit upwind core
-                            a[i] -= theta * sigma
-                            b[i] += theta * sigma
-                            d_rhs[i] -= (1.0 - theta) * sigma * (C_old[i] - C_old[i-1])
-                            # QUICK correction term
-                            im2 = i - 2 if i >= 2 else 0
-                            fq_out = 0.5 * (C_iter[i] + C_iter[i+1]) - 0.125 * (C_iter[i-1] - 2.0 * C_iter[i] + C_iter[i+1])
-                            fq_in = 0.5 * (C_iter[i-1] + C_iter[i]) - 0.125 * (C_iter[im2] - 2.0 * C_iter[i-1] + C_iter[i])
-                            fu_out = C_iter[i]
-                            fu_in = C_iter[i-1]
-                            corr = -(u / dx) * ((fq_out - fq_in) - (fu_out - fu_in))
-                            d_rhs[i] += corr * dt * self.config.quick_up_ratio
-
-                # Boundary conditions
-                if apply_cyclic_logic:
-                    b[0] = 1.0; d_rhs[0] = C_iter[nc-1]
-                    b[nc-1] = 1.0; d_rhs[nc-1] = C_iter[0]
+            # Choose solver based on discretisation and advection type
+            if disc == "exp":
+                if adv_type == "quick":
+                    new_vals = self._exp_quick_transport(C_old, A, B, e, f, g, left_val, right_val)
                 else:
-                    # Left boundary
-                    if prop.bc_left_type == "Fixed":
-                        b[0] = 1.0; d_rhs[0] = prop.bc_left_val
-                    else:  # ZeroGrad
-                        b[0] = 1.0; c_d[0] = -1.0; d_rhs[0] = 0.0
-                    # Right boundary
-                    if prop.bc_right_type == "Fixed":
-                        b[nc-1] = 1.0; d_rhs[nc-1] = prop.bc_right_val
-                    else:  # ZeroGrad
-                        a[nc-1] = -1.0; b[nc-1] = 1.0; d_rhs[nc-1] = 0.0
+                    new_vals = self._exp_transport(C_old, B, e, f, left_val, right_val, prop)
+            elif disc == "imp":
+                if adv_type == "quick":
+                    new_vals = self._imp_quick_transport(C_old, A, B, e, f, g, up_b, up_e, up_f, left_val, right_val)
+                else:
+                    new_vals = self._imp_transport(C_old, B, e, f, left_val, right_val, prop)
+            else:  # semi-implicit
+                if adv_type == "quick":
+                    new_vals = self._semi_imp_quick_transport(C_old, A, B, e, f, g, up_b, up_e, up_f, left_val, right_val)
+                else:
+                    new_vals = self._semi_imp_transport(C_old, B, e, f, left_val, right_val, prop)
+            # clamp to min/max and assign
+            np.clip(new_vals, prop.min_val, prop.max_val, out=new_vals)
+            prop.values = new_vals
 
-                # Solve the tri‑diagonal system
-                cp = np.zeros(nc)
-                dp = np.zeros(nc)
-                denom = b[0] if b[0] != 0 else 1e-15
-                cp[0] = c_d[0] / denom
-                dp[0] = d_rhs[0] / denom
-                for i in range(1, nc):
-                    denom = b[i] - a[i] * cp[i-1]
-                    if denom == 0:
-                        denom = 1e-15
-                    cp[i] = c_d[i] / denom if i < nc - 1 else 0.0
-                    dp[i] = (d_rhs[i] - a[i] * dp[i-1]) / denom
-                C_new = np.zeros(nc)
-                C_new[nc-1] = dp[nc-1]
-                for i in range(nc-2, -1, -1):
-                    C_new[i] = dp[i] - cp[i] * C_new[i+1]
-                C_iter = C_new.copy()
-            # Clip to bounds and assign
-            np.clip(C_iter, prop.min_val, prop.max_val, out=C_iter)
-            prop.values = C_iter
+    # ------------------------------------------------------------------
+    # Transport solvers replicating the VBA routines
+    #
+    # Each of the following methods receives arrays of coefficients
+    # (A, B, e, f, g) that correspond to the diffusion/advection
+    # contribution.  The arrays are 0-indexed and correspond to
+    # positions 0..NC-1.  left_val and right_val are the boundary
+    # values (or None for cyclic boundaries).  C_old is the state
+    # vector prior to the current step.  up_b, up_e, up_f are the
+    # upwind coefficients used in QUICK implicit/semi-implicit solvers.
+    #
+    # These solvers return a new numpy array of length NC with the
+    # updated values.
+
+    def _exp_transport(self, C_old, B, e, f, left_val, right_val, prop):
+        nc = len(C_old)
+        new_vals = np.zeros(nc)
+        # handle cyclic boundaries by wrapping C_old
+        cyclic = (prop.bc_left_type == "Cyclic" or prop.bc_right_type == "Cyclic")
+        for i in range(nc):
+            # compute neighbours indices or use boundary values
+            if i == 0:
+                c_left = C_old[nc-1] if prop.bc_left_type == "Cyclic" else left_val
+                c_right = C_old[i+1] if nc > 1 else (C_old[0] if prop.bc_right_type == "Cyclic" else right_val)
+            elif i == nc-1:
+                c_left = C_old[i-1]
+                c_right = C_old[0] if prop.bc_right_type == "Cyclic" else right_val
+            else:
+                c_left = C_old[i-1]
+                c_right = C_old[i+1]
+            # update
+            new_vals[i] = B[i] * c_left + (1.0 + e[i]) * C_old[i] + f[i] * c_right
+        return new_vals
+
+    def _exp_quick_transport(self, C_old, A, B, e, f, g, left_val, right_val):
+        nc = len(C_old)
+        new_vals = np.zeros(nc)
+        for i in range(nc):
+            if i == 0:
+                # cell 1: uses left boundary, cell0, cell1, cell2
+                c_left = left_val
+                c0 = C_old[0]
+                c1 = C_old[1] if nc > 1 else C_old[0]
+                c2 = C_old[2] if nc > 2 else c1
+                new_vals[0] = B[0] * c_left + (1.0 + e[0]) * c0 + f[0] * c1 + g[0] * c2
+            elif i == 1:
+                c_ll = left_val
+                c_l = C_old[0]
+                c0 = C_old[1]
+                c1 = C_old[2] if nc > 2 else C_old[1]
+                c2 = C_old[3] if nc > 3 else c1
+                new_vals[1] = A[1] * c_ll + B[1] * c_l + (1.0 + e[1]) * c0 + f[1] * c1 + g[1] * c2
+            elif i == nc - 2:
+                # second last
+                c_ll = C_old[i-2]
+                c_l = C_old[i-1]
+                c0 = C_old[i]
+                c1 = C_old[i+1]
+                c2 = right_val
+                new_vals[i] = A[i] * c_ll + B[i] * c_l + (1.0 + e[i]) * c0 + f[i] * c1 + g[i] * c2
+            elif i == nc - 1:
+                c_ll = C_old[i-2]
+                c_l = C_old[i-1]
+                c0 = C_old[i]
+                c1 = right_val
+                c2 = 0.0
+                new_vals[i] = A[i] * c_ll + B[i] * c_l + (1.0 + e[i]) * c0 + f[i] * c1 + g[i] * c2
+            else:
+                c_ll = C_old[i-2]
+                c_l = C_old[i-1]
+                c0 = C_old[i]
+                c1 = C_old[i+1]
+                c2 = C_old[i+2]
+                new_vals[i] = A[i] * c_ll + B[i] * c_l + (1.0 + e[i]) * c0 + f[i] * c1 + g[i] * c2
+        return new_vals
+
+    def _imp_transport(self, C_old, B, e, f, left_val, right_val, prop):
+        """
+        Fully implicit tridiagonal solver for diffusion/advection (non-QUICK).
+
+        This corresponds to ImpTransport in the VBA code.  Coefficients
+        B, e, f are used to form a tridiagonal matrix (A is zero).
+        """
+        nc = len(C_old)
+        # Initialize tridiagonal arrays
+        a = -B.copy()
+        b = 1.0 - e.copy()
+        c = -f.copy()
+        # Right-hand side is just the old values
+        rhs = C_old.copy()
+        # Apply boundary conditions to RHS
+        # left boundary
+        if prop.bc_left_type == "Fixed":
+            rhs[0] -= a[0] * left_val
+        # right boundary
+        if prop.bc_right_type == "Fixed":
+            rhs[nc-1] -= c[nc-1] * right_val
+        # Solve tridiagonal system via Thomas algorithm
+        cp = np.zeros(nc)
+        dp = np.zeros(nc)
+        if b[0] == 0.0:
+            b[0] = 1e-15
+        cp[0] = c[0] / b[0]
+        dp[0] = rhs[0] / b[0]
+        for i in range(1, nc):
+            denom = b[i] - a[i] * cp[i-1]
+            if denom == 0.0:
+                denom = 1e-15
+            cp[i] = c[i] / denom
+            dp[i] = (rhs[i] - a[i] * dp[i-1]) / denom
+        new_vals = np.zeros(nc)
+        new_vals[nc-1] = dp[nc-1]
+        for i in range(nc - 2, -1, -1):
+            new_vals[i] = dp[i] - cp[i] * new_vals[i+1]
+        return new_vals
+
+    def _imp_quick_transport(self, C_old, A, B, e, f, g, up_b, up_e, up_f, left_val, right_val):
+        """
+        Fully implicit QUICK solver using a five-diagonal scheme.  This
+        implementation follows the VBA ImpQUICKTransport routine.  It
+        eliminates the lower secondary diagonal and solves the resulting
+        tridiagonal system via Thomas algorithm.
+        """
+        nc = len(C_old)
+        # Allocate coefficient arrays
+        L_left = -A.copy()
+        Left = -B.copy()
+        Center = 1.0 - e.copy()
+        Right = -f.copy()
+        R_right = -g.copy()
+        rhs = C_old.copy()
+        # upwind replacements are embedded in A,B,e,f,g already when flagged
+        # Apply boundary values to rhs (left and right) as in VBA
+        if left_val is not None:
+            rhs[0] -= Left[0] * left_val
+            rhs[1] -= L_left[1] * left_val
+        if right_val is not None:
+            rhs[nc-1] -= Right[nc-1] * right_val
+            rhs[nc-2] -= R_right[nc-2] * right_val
+        # Forward elimination
+        for i in range(2, nc):
+            # eliminate L_left[i]
+            f1 = Left[i-1] / Center[i-2]
+            Left[i-1] = Left[i-1] - f1 * Center[i-2]
+            Center[i-1] = Center[i-1] - f1 * Right[i-2]
+            Right[i-1] = Right[i-1] - f1 * R_right[i-2]
+            rhs[i-1] = rhs[i-1] - f1 * rhs[i-2]
+            f2 = L_left[i] / Center[i-2]
+            L_left[i] = L_left[i] - f2 * Center[i-2]
+            Left[i] = Left[i] - f2 * Right[i-2]
+            Center[i] = Center[i] - f2 * R_right[i-2]
+            rhs[i] = rhs[i] - f2 * rhs[i-2]
+        # Handle last equation elimination
+        f_last = Left[nc-1] / Center[nc-2]
+        Left[nc-1] = Left[nc-1] - f_last * Center[nc-2]
+        Center[nc-1] = Center[nc-1] - f_last * Right[nc-2]
+        Right[nc-1] = Right[nc-1] - f_last * R_right[nc-2]
+        rhs[nc-1] = rhs[nc-1] - f_last * rhs[nc-2]
+        # Back substitution
+        new_vals = np.zeros(nc)
+        new_vals[nc-1] = rhs[nc-1] / Center[nc-1]
+        new_vals[nc-2] = (rhs[nc-2] - Right[nc-2] * new_vals[nc-1]) / Center[nc-2]
+        for k in range(2, nc):
+            i = nc - 1 - k
+            new_vals[i] = (rhs[i] - Right[i] * new_vals[i+1] - R_right[i] * new_vals[i+2]) / Center[i]
+        return new_vals
+
+    def _semi_imp_transport(self, C_old, B, e, f, left_val, right_val, prop):
+        """
+        Semi-implicit solver for non-QUICK advection/diffusion.  It uses
+        Crank–Nicolson-like averaging on the RHS.  This mirrors the
+        semiImpTransport routine in VBA.
+        """
+        nc = len(C_old)
+        # compute coefficients
+        a = -B.copy() / 2.0
+        b = 1.0 - e.copy() / 2.0
+        c = -f.copy() / 2.0
+        rhs = np.zeros(nc)
+        # Build RHS = C_old + 0.5 * (B * left + e * C_old + f * right)
+        for i in range(nc):
+            if i == 0:
+                c_left = C_old[nc-1] if prop.bc_left_type == "Cyclic" else left_val
+                c_right = C_old[i+1] if nc > 1 else (C_old[0] if prop.bc_right_type == "Cyclic" else right_val)
+            elif i == nc-1:
+                c_left = C_old[i-1]
+                c_right = C_old[0] if prop.bc_right_type == "Cyclic" else right_val
+            else:
+                c_left = C_old[i-1]
+                c_right = C_old[i+1]
+            rhs[i] = C_old[i] + 0.5 * (B[i] * c_left + e[i] * C_old[i] + f[i] * c_right)
+        # Apply boundary terms to rhs for fixed BC
+        if prop.bc_left_type == "Fixed":
+            rhs[0] -= a[0] * left_val
+        if prop.bc_right_type == "Fixed":
+            rhs[nc-1] -= c[nc-1] * right_val
+        # Solve tridiagonal system
+        cp = np.zeros(nc)
+        dp = np.zeros(nc)
+        if b[0] == 0.0:
+            b[0] = 1e-15
+        cp[0] = c[0] / b[0]
+        dp[0] = rhs[0] / b[0]
+        for i in range(1, nc):
+            denom = b[i] - a[i] * cp[i-1]
+            if denom == 0.0:
+                denom = 1e-15
+            cp[i] = c[i] / denom
+            dp[i] = (rhs[i] - a[i] * dp[i-1]) / denom
+        new_vals = np.zeros(nc)
+        new_vals[nc-1] = dp[nc-1]
+        for i in range(nc-2, -1, -1):
+            new_vals[i] = dp[i] - cp[i] * new_vals[i+1]
+        return new_vals
+
+    def _semi_imp_quick_transport(self, C_old, A, B, e, f, g, up_b, up_e, up_f, left_val, right_val):
+        """
+        Semi-implicit QUICK solver.  This mirrors SemiImpQUICKTransport in
+        the VBA code, using half-step contributions on both sides of
+        the equation.
+        """
+        nc = len(C_old)
+        # Initialize coefficient arrays for semi-implicit: divide QUICK coeffs by 2
+        L_left = -A.copy() / 2.0
+        Left = -B.copy() / 2.0
+        Center = 1.0 - e.copy() / 2.0
+        Right = -f.copy() / 2.0
+        R_right = -g.copy() / 2.0
+        rhs = C_old.copy()
+        # Compute RHS modifications: add 0.5*(A,B,e,f,g)*Old values
+        for i in range(nc):
+            if i == 0:
+                c_ll = left_val
+                c_l = C_old[0]
+                c0 = C_old[0]
+                c1 = C_old[1] if nc > 1 else C_old[0]
+                c2 = C_old[2] if nc > 2 else c1
+            elif i == 1:
+                c_ll = left_val
+                c_l = C_old[0]
+                c0 = C_old[1]
+                c1 = C_old[2] if nc > 2 else C_old[1]
+                c2 = C_old[3] if nc > 3 else c1
+            elif i == nc - 2:
+                c_ll = C_old[i-2]
+                c_l = C_old[i-1]
+                c0 = C_old[i]
+                c1 = C_old[i+1]
+                c2 = right_val
+            elif i == nc - 1:
+                c_ll = C_old[i-2]
+                c_l = C_old[i-1]
+                c0 = C_old[i]
+                c1 = right_val
+                c2 = 0.0
+            else:
+                c_ll = C_old[i-2]
+                c_l = C_old[i-1]
+                c0 = C_old[i]
+                c1 = C_old[i+1]
+                c2 = C_old[i+2]
+            rhs[i] += 0.5 * (A[i] * c_ll + B[i] * c_l + e[i] * c0 + f[i] * c1 + g[i] * c2)
+        # Apply boundary corrections for semi-implicit quick
+        if left_val is not None:
+            rhs[0] -= 2.0 * Left[0] * left_val + (Center[0] - 1.0) * C_old[0] + Right[0] * C_old[1] + R_right[0] * (C_old[2] if nc > 2 else C_old[1])
+            rhs[1] -= 2.0 * L_left[1] * left_val + Left[1] * C_old[0] + (Center[1] - 1.0) * C_old[1] + Right[1] * C_old[2] + R_right[1] * (C_old[3] if nc > 3 else C_old[2])
+        if right_val is not None:
+            rhs[nc-1] -= Left[nc-1] * C_old[nc-2] + (Center[nc-1] - 1.0) * C_old[nc-1] + 2.0 * Right[nc-1] * right_val
+            rhs[nc-2] -= L_left[nc-2] * C_old[nc-4] + Left[nc-2] * C_old[nc-3] + (Center[nc-2] - 1.0) * C_old[nc-2] + Right[nc-2] * C_old[nc-1] + 2.0 * R_right[nc-2] * right_val
+        # Forward elimination (similar to implicit quick)
+        for i in range(2, nc):
+            f1 = Left[i-1] / Center[i-2]
+            Left[i-1] = Left[i-1] - f1 * Center[i-2]
+            Center[i-1] = Center[i-1] - f1 * Right[i-2]
+            Right[i-1] = Right[i-1] - f1 * R_right[i-2]
+            rhs[i-1] = rhs[i-1] - f1 * rhs[i-2]
+            f2 = L_left[i] / Center[i-2]
+            L_left[i] = L_left[i] - f2 * Center[i-2]
+            Left[i] = Left[i] - f2 * Right[i-2]
+            Center[i] = Center[i] - f2 * R_right[i-2]
+            rhs[i] = rhs[i] - f2 * rhs[i-2]
+        f_last = Left[nc-1] / Center[nc-2]
+        Left[nc-1] = Left[nc-1] - f_last * Center[nc-2]
+        Center[nc-1] = Center[nc-1] - f_last * Right[nc-2]
+        Right[nc-1] = Right[nc-1] - f_last * R_right[nc-2]
+        rhs[nc-1] = rhs[nc-1] - f_last * rhs[nc-2]
+        # Back substitution
+        new_vals = np.zeros(nc)
+        new_vals[nc-1] = rhs[nc-1] / Center[nc-1]
+        new_vals[nc-2] = (rhs[nc-2] - Right[nc-2] * new_vals[nc-1]) / Center[nc-2]
+        for k in range(2, nc):
+            i = nc - 1 - k
+            new_vals[i] = (rhs[i] - Right[i] * new_vals[i+1] - R_right[i] * new_vals[i+2]) / Center[i]
+        return new_vals
+
 
     def apply_kinetics(self, dt):
         temp = self.constituents["Temperature"].values if "Temperature" in self.constituents else np.full(self.grid.nc, 20.0)
@@ -454,19 +853,40 @@ class RiverModel:
         co2_prop = self.constituents.get("CO2")
         gen_prop = self.constituents.get("Generic")
         
-        # 1. Temperature
+        # 1. Temperature: apply free-surface fluxes sequentially as in VBA
         if "Temperature" in self.constituents:
             p = self.constituents["Temperature"]
+            # physical constants for conversion (kg/m³·J/kg·K)
+            rho_cp = 1000.0 * 4180.0
+            depth = self.grid.water_depth if self.grid.water_depth > 0 else 1.0
             for i in range(self.grid.nc):
-                fluxes = self.calculate_heat_fluxes(p.values[i], self.current_time)
-                val_change = 0.0
-                if p.use_surface_flux: val_change += fluxes["solar"]
-                if p.use_radiative_heat: val_change += fluxes["atmos"] + fluxes["back"]
-                if p.use_sensible_heat: val_change += fluxes["sensible"]
-                if p.use_latent_heat: val_change += fluxes["latent"]
-                
-                dTemp = val_change / (self.grid.water_depth * 4186000.0)
-                p.values[i] += dTemp * dt
+                T = p.values[i]
+                # compute heat fluxes at current time (self.current_time references
+                # the start of the current step; the VBA routine evaluates
+                # radiation etc. using ctrl.timedays which is updated
+                # immediately before transport).  We therefore use
+                # self.current_time + dt here to match the VBA ordering where
+                # dt is added before fluxes are applied.
+                flux = self.calculate_heat_fluxes(T, self.current_time + dt)
+                # apply solar
+                if p.use_surface_flux:
+                    dT = flux["solar"] * dt / (rho_cp * depth)
+                    p.values[i] += dT
+                    T = p.values[i]
+                # sensible heat
+                if p.use_sensible_heat:
+                    dT = flux["sensible"] * dt / (rho_cp * depth)
+                    p.values[i] += dT
+                    T = p.values[i]
+                # latent heat
+                if p.use_latent_heat:
+                    dT = flux["latent"] * dt / (rho_cp * depth)
+                    p.values[i] += dT
+                    T = p.values[i]
+                # radiative heat
+                if p.use_radiative_heat:
+                    dT = flux["radiative"] * dt / (rho_cp * depth)
+                    p.values[i] += dT
 
         # 2. Generic
         if gen_prop:
@@ -537,41 +957,44 @@ class RiverModel:
         self.current_time += dt
 
     def run_simulation(self):
-        """Run the simulation and record outputs at t=0 and at dt_print intervals.
-
-        This mirrors the intent of the VBA model where results are printed when the
-        simulation time reaches the next print time, rather than using a simple
-        integer step modulus (which can drift if dt_print is not an integer multiple
-        of dt).
         """
-        total_time_s = float(self.config.duration_days) * 86400.0
-        dt = float(self.config.dt)
-        dt_print = max(float(self.config.dt_print), dt)
+        Run the simulation and record results at specified print intervals.
 
-        # Reset outputs
+        The original VBA code prints results whenever the simulation time
+        exceeds the next print time.  It does not include an explicit
+        initial output at t=0 in the spreadsheet, but for clarity and
+        easier comparison we include the initial state as the first
+        entry.  Subsequent outputs are recorded whenever
+        current_time >= next_print_time (with next_print_time
+        incremented by dt_print after each print).
+        """
+        total_steps = int((self.config.duration_days * 86400.0) / self.config.dt)
+        # Ensure there is at least one step
+        if total_steps < 1:
+            total_steps = 1
+        # Initialise results
         self.results["times"] = []
         for name in self.constituents:
             self.results[name] = []
-
-        # Always store initial condition (t=0)
+        # Record initial state at t=0
         self.results["times"].append(0.0)
         for name, prop in self.constituents.items():
             self.results[name].append(prop.values.copy())
-
-        next_print = dt_print
-        n_steps = int(math.ceil(total_time_s / dt)) if dt > 0 else 0
-
-        for step_n in range(n_steps):
+        # Determine next print time in seconds
+        next_print = self.config.dt_print
+        # Time stepping loop
+        for step_n in range(1, total_steps + 1):
             self.step()
-
-            # Record as many print instants as we have passed
-            while self.current_time + 1e-12 >= next_print:
+            # If current_time exceeds next_print, record and increment
+            if self.current_time >= next_print - 1e-9:
                 self.results["times"].append(self.current_time / 86400.0)
                 for name, prop in self.constituents.items():
                     self.results[name].append(prop.values.copy())
-                next_print += dt_print
-
-            yield (step_n + 1) / max(n_steps, 1)
+                # advance next_print by multiples of dt_print (catching up if dt > dt_print)
+                # ensure we do not accumulate floating point drift
+                while self.current_time >= next_print - 1e-9:
+                    next_print += self.config.dt_print
+            yield step_n / total_steps
             
     def run(self, callback=None):
         runner = self.run_simulation()
