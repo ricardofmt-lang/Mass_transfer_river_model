@@ -4,19 +4,77 @@ import numpy as np
 import matplotlib.pyplot as plt
 from river_core import RiverModel
 import math
+import json, base64, zlib
 
 st.set_page_config(page_title="River Water Quality Model", layout="wide")
 
-# Initialize Session State Defaults if not present
+# ======================================================================
+# CONFIGURATION PERSISTENCE
+#
+# Persist user configuration in the URL query parameters.  The
+# configuration dictionary is compressed with zlib and base64 encoded.
+# Users can bookmark or share the resulting URL to restore their last
+# inputs.  The persistence is per-browser since it relies on the query
+# string.
+# ======================================================================
+
+def _encode_config(cfg: dict) -> str:
+    raw = json.dumps(cfg, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    comp = zlib.compress(raw, level=9)
+    return base64.urlsafe_b64encode(comp).decode("ascii")
+
+def _decode_config(s: str) -> dict:
+    try:
+        comp = base64.urlsafe_b64decode(s.encode("ascii"))
+        raw = zlib.decompress(comp)
+        return json.loads(raw.decode("utf-8"))
+    except Exception:
+        return {}
+
+def load_config_from_url(default_cfg: dict) -> dict:
+    params = st.query_params
+    if "cfg" in params:
+        cfg_dict = _decode_config(params.get("cfg"))
+        # merge with defaults; values in cfg override defaults
+        if isinstance(cfg_dict, dict):
+            return {**default_cfg, **cfg_dict}
+    return default_cfg.copy()
+
+def save_config_to_url(cfg: dict) -> None:
+    # Only update the URL if cfg is not empty
+    try:
+        st.query_params["cfg"] = _encode_config(cfg)
+    except Exception:
+        pass
+
+# Default configuration values
+DEFAULT_CONFIG = {
+    'sim_duration': 1.0,
+    'dt': 200.0,
+    'dt_print': 3600.0,
+    'L': 12000.0,
+    'nc': 300,
+    'width': 100.0,
+    'depth': 0.5,
+    'slope': 0.0001,
+    'manning': 0.025,
+    'Q_in': 12.515,
+    'diff_in': 1.0,
+    'air_temp': 20.0,
+    'wind': 0.0,
+    'humidity': 80.0,
+    'h_min': 6.9,
+    'sky_temp': 0.0,
+    'solar': 1370.0,
+    'cloud': 0.0,
+    'lat': 38.0,
+    'sunrise': 6.0,
+    'sunset': 18.0
+}
+
+# Initialize session state configuration from URL (or defaults)
 if 'config' not in st.session_state:
-    st.session_state['config'] = {
-        'sim_duration': 1.0, 'dt': 200.0, 'dt_print': 3600.0,
-        'L': 12000.0, 'nc': 300, 'width': 100.0, 'depth': 0.5,
-        'slope': 0.0001, 'manning': 0.025, 'Q_in': 12.515, 'diff_in': 1.0,
-        'air_temp': 20.0, 'wind': 0.0, 'humidity': 80.0, 'h_min': 6.9,
-        'sky_temp': -40.0, 'solar': 1370.0, 'cloud': 0.0, 'lat': 38.0,
-        'sunrise': 6.0, 'sunset': 18.0
-    }
+    st.session_state['config'] = load_config_from_url(DEFAULT_CONFIG)
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -95,7 +153,7 @@ with main_tabs[1]:
         wind = st.number_input("Wind Speed (m/s)", value=st.session_state['config']['wind'], step=0.1, key="wind")
         humidity = st.number_input("Humidity (%)", value=st.session_state['config']['humidity'], step=1.0, key="humidity")
         h_min = st.number_input("h_min", value=st.session_state['config']['h_min'], step=0.1, key="h_min")
-        sky_temp = st.number_input("Sky Temp (°C) (-40=Calc)", value=st.session_state['config']['sky_temp'], step=1.0, key="sky_temp")
+        sky_temp = st.number_input("Sky Temp (°C)", value=st.session_state['config']['sky_temp'], step=1.0, key="sky_temp")
     with col2:
         solar = st.number_input("Solar Constant (W/m²)", value=st.session_state['config']['solar'], step=10.0, key="solar")
         cloud = st.number_input("Cloud Cover (%)", value=st.session_state['config']['cloud'], step=1.0, key="cloud")
@@ -308,6 +366,32 @@ if run_btn:
         res = model.run()
         st.session_state['results'] = res
         st.session_state['grid'] = model.grid.xc
+        # Update stored configuration with the latest values
+        st.session_state['config'] = {
+            'sim_duration': sim_duration,
+            'dt': dt,
+            'dt_print': dt_print,
+            'L': L,
+            'nc': int(nc),
+            'width': width,
+            'depth': depth,
+            'slope': slope,
+            'manning': manning,
+            'Q_in': Q_in,
+            'diff_in': diff_in,
+            'air_temp': air_temp,
+            'wind': wind,
+            'humidity': humidity,
+            'h_min': h_min,
+            'sky_temp': sky_temp,
+            'solar': solar,
+            'cloud': cloud,
+            'lat': lat,
+            'sunrise': sunrise,
+            'sunset': sunset
+        }
+        # Persist configuration to URL
+        save_config_to_url(st.session_state['config'])
         st.success("Simulation Complete")
         st.rerun()
 
@@ -320,7 +404,7 @@ with main_tabs[4]:
         xc = st.session_state['grid']
         times = res['times']
         
-        tab1, tab2 = st.tabs(["Profiles", "Time Series"])
+        tab1, tab2, tab3 = st.tabs(["Profiles", "Time Series", "Space-Time Tables"])
         
         with tab1:
             if len(times) > 0:
@@ -348,3 +432,75 @@ with main_tabs[4]:
                         ax.set_xlabel("Time (Days)")
                         ax.grid(True, alpha=0.3)
                         st.pyplot(fig)
+
+        with tab3:
+            # Space–Time Tables: show a table of values for a selected constituent over
+            # time (rows) and space (columns), including boundary values and
+            # initial conditions.  Provides downsampling controls to limit
+            # table size for large simulations.
+            active_names = [n for n, cfg in configs.items() if cfg["active"] and n in res]
+            if active_names:
+                sel_name = st.selectbox("Constituent", active_names)
+                if sel_name:
+                    data = res[sel_name]  # list of 1D arrays
+                    n_time = len(data)
+                    n_cells = len(xc)
+                    # Determine boundary values based on UI config
+                    cfg = configs[sel_name]
+                    bc_left_type = cfg.get("bclt", "Fixed")
+                    bc_left_val = cfg.get("bclv", 0.0)
+                    bc_right_type = cfg.get("bcrt", "ZeroGrad")
+                    bc_right_val = cfg.get("bcrv", 0.0)
+                    # Sliders for downsampling
+                    max_rows = st.slider("Max Rows", min_value=5, max_value=min(100, n_time), value=min(30, n_time))
+                    max_cols = st.slider("Max Columns", min_value=5, max_value=min(100, n_cells + 2), value=min(30, n_cells + 2))
+                    # Determine sampled row indices (always include first and last)
+                    if max_rows >= n_time:
+                        row_idx = list(range(n_time))
+                    else:
+                        row_idx = sorted({0, n_time - 1} | set(np.linspace(0, n_time - 1, max_rows, dtype=int)))
+                    # Determine sampled column indices for interior cells
+                    num_interior_cols = max_cols - 2
+                    if num_interior_cols < 1:
+                        num_interior_cols = 1
+                    if num_interior_cols >= n_cells:
+                        col_idx = list(range(n_cells))
+                    else:
+                        col_idx = sorted(set(np.linspace(0, n_cells - 1, num_interior_cols, dtype=int)))
+                    # Build DataFrame rows
+                    table_rows = []
+                    for i in row_idx:
+                        arr = data[i]
+                        # compute boundary values
+                        if bc_left_type == "Cyclic":
+                            left_val = arr[-1]
+                        elif bc_left_type == "ZeroGrad":
+                            left_val = arr[0]
+                        else:
+                            left_val = bc_left_val
+                        if bc_right_type == "Cyclic":
+                            right_val = arr[0]
+                        elif bc_right_type == "ZeroGrad":
+                            right_val = arr[-1]
+                        else:
+                            right_val = bc_right_val
+                        row = [left_val]
+                        for j in col_idx:
+                            row.append(arr[j])
+                        row.append(right_val)
+                        table_rows.append(row)
+                    # Column labels: left boundary, interior x positions, right boundary
+                    col_labels = ["x=0 (BC)"]
+                    for j in col_idx:
+                        col_labels.append(f"{xc[j]:.1f}")
+                    col_labels.append(f"x={xc[-1] + (xc[1]-xc[0] if len(xc)>1 else 0):.1f} (BC)")
+                    df_table = pd.DataFrame(table_rows, columns=col_labels, index=[f"{times[i]:.3f}d" for i in row_idx])
+                    st.dataframe(df_table, use_container_width=True)
+                    # Download button
+                    csv = df_table.to_csv(index_label="Time (d)")
+                    st.download_button(
+                        label="Download CSV",
+                        data=csv,
+                        file_name=f"{sel_name}_space_time.csv",
+                        mime="text/csv"
+                    )
