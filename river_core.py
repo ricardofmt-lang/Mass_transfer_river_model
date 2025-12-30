@@ -890,9 +890,10 @@ class RiverModel:
 
         # 2. Generic
         if gen_prop:
+            # Generic decay/growth uses a multiplicative formulation: new = old * (1 + k*dt)
             k = gen_prop.k_decay
             for i in range(self.grid.nc):
-                gen_prop.values[i] -= k * gen_prop.values[i] * dt
+                gen_prop.values[i] = gen_prop.values[i] * (1.0 + k * dt)
 
         # 3. BOD
         if bod_prop:
