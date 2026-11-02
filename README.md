@@ -1,5 +1,10 @@
 # River transport model
 
+The [live app](https://ist-river-transport.streamlit.app/) is available on
+Streamlit Community Cloud. The illustrated
+[student guide](docs/River_Transport_Model_Student_Guide.docx) explains the
+inputs, numerical methods, results, and code with screenshots and exercises.
+
 This project reproduces the `Channel` VBA macro in
 `Channel_TempOD&BOD&CO2AdvectionSourceCode2025_V3.xlsm` as a Python model
 and Streamlit app. The reference PDF is `Transport Model for a River.pdf`.
