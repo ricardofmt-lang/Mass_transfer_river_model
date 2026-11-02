@@ -1,0 +1,507 @@
+{
+  "main": {
+    "simulation_duration_days": 2,
+    "time_step_seconds": 500,
+    "print_interval_seconds": 2500,
+    "time_method": "semi",
+    "advection": false,
+    "advection_type": "upwind",
+    "quick_up_ratio": 4,
+    "quick_up_ratio_label_present": true,
+    "diffusion": true
+  },
+  "river": {
+    "length_m": 10000,
+    "cells": 1000,
+    "width_m": 5,
+    "depth_m": 0.5,
+    "slope_percent": 0.0001,
+    "manning_coefficient": 0.025,
+    "flow_rate_m3_s": 0.05,
+    "velocity_m_s": 0.02,
+    "diffusivity_m2_s": 4,
+    "velocity_mode": "flow_formula"
+  },
+  "atmosphere": {
+    "air_temperature_c": 20,
+    "wind_speed_m_s": 0,
+    "minimum_heat_transfer_coefficient": 6.9,
+    "h_min_label_present": true,
+    "humidity_percent": 80,
+    "solar_constant_w_m2": 1370,
+    "latitude_degrees": 38,
+    "sky_temperature_c": -40,
+    "sky_temperature_imposed": true,
+    "cloud_cover_percent": 0,
+    "sunrise_hour": 6,
+    "sunset_hour": 18,
+    "o2_partial_pressure_bar": 0.2095,
+    "co2_partial_pressure_bar": 0.00039528301886792444,
+    "o2_pressure_label_present": true,
+    "co2_pressure_label_present": true,
+    "henry_constants": [
+      {
+        "temperature_c": 0,
+        "o2": 0.0021812,
+        "co2": 0.076425
+      },
+      {
+        "temperature_c": 5,
+        "o2": 0.0019126,
+        "co2": 0.063532
+      },
+      {
+        "temperature_c": 10,
+        "o2": 0.0016963,
+        "co2": 0.05327
+      },
+      {
+        "temperature_c": 15,
+        "o2": 0.0015236,
+        "co2": 0.045463
+      },
+      {
+        "temperature_c": 20,
+        "o2": 0.001384,
+        "co2": 0.039172
+      },
+      {
+        "temperature_c": 25,
+        "o2": 0.001263,
+        "co2": 0.033363
+      }
+    ],
+    "henry_header_order": [
+      "O2",
+      "CO2"
+    ],
+    "co2_pressure_mode": "o2_formula"
+  },
+  "discharges": [
+    {
+      "id": 1,
+      "name": "Descarga 1",
+      "cell": 10,
+      "location_km": null,
+      "flow_rate_m3_s": 0,
+      "Temperature": 0,
+      "DO": 0,
+      "BOD": 0,
+      "CO2": 0,
+      "Generic": 0
+    },
+    {
+      "id": 2,
+      "name": "Descarga2",
+      "cell": 10,
+      "location_km": null,
+      "flow_rate_m3_s": 0,
+      "Temperature": 0,
+      "DO": 0,
+      "BOD": 0,
+      "CO2": 0,
+      "Generic": 0
+    },
+    {
+      "id": 3,
+      "name": "Descarga3",
+      "cell": 10,
+      "location_km": null,
+      "flow_rate_m3_s": 0,
+      "Temperature": 50,
+      "DO": 0,
+      "BOD": 200,
+      "CO2": 1,
+      "Generic": 100000
+    },
+    {
+      "id": 4,
+      "name": "Descarga4",
+      "cell": 10,
+      "location_km": null,
+      "flow_rate_m3_s": 0,
+      "Temperature": 50,
+      "DO": 0,
+      "BOD": 200,
+      "CO2": 1,
+      "Generic": 100000
+    }
+  ],
+  "discharge_cells_label_present": true,
+  "discharge_property_labels_present": {
+    "Temperature": true,
+    "DO": true,
+    "BOD": true,
+    "CO2": true,
+    "Generic": true
+  },
+  "properties": {
+    "Generic": {
+      "name_cell": "E.coli",
+      "name_label_matches_vba": false,
+      "units": "UFC/100ml",
+      "active": true,
+      "active_label_present": true,
+      "default": 1,
+      "maximum": 100000000000,
+      "maximum_label_present": true,
+      "minimum": 0,
+      "minimum_label_present": true,
+      "cyclic": false,
+      "cyclic_label_present": false,
+      "left_boundary": 20,
+      "right_boundary": 0,
+      "free_surface_flux": false,
+      "sensible_heat": true,
+      "latent_heat": true,
+      "radiative_heat": true,
+      "anaerobic_respiration": false,
+      "bod_oxygen_half_saturation": 0,
+      "bod_logistic_max": 10000000,
+      "bod_logistic_max_label_present": false,
+      "bod_growth_per_day": 0,
+      "bod_decay_per_day": 0,
+      "bod_decay_label_present": false,
+      "generic_rate": 10,
+      "generic_rate_label_present": true,
+      "generic_rate_units": "T90(Hours)",
+      "initial": {
+        "type": "DEFAULT",
+        "default_cell_value": 1,
+        "default_cell_label_present": true,
+        "cells": [
+          {
+            "cell": 242,
+            "value": 16000
+          },
+          {
+            "cell": 243,
+            "value": 16000
+          },
+          {
+            "cell": 244,
+            "value": 16000
+          },
+          {
+            "cell": 245,
+            "value": 16000
+          },
+          {
+            "cell": 246,
+            "value": 16000
+          },
+          {
+            "cell": 247,
+            "value": 16000
+          },
+          {
+            "cell": 248,
+            "value": 16000
+          },
+          {
+            "cell": 249,
+            "value": 16000
+          },
+          {
+            "cell": 250,
+            "value": 16000
+          },
+          {
+            "cell": 251,
+            "value": 16000
+          },
+          {
+            "cell": 252,
+            "value": 16000
+          },
+          {
+            "cell": 253,
+            "value": 16000
+          },
+          {
+            "cell": 254,
+            "value": 16000
+          },
+          {
+            "cell": 255,
+            "value": 16000
+          },
+          {
+            "cell": 256,
+            "value": 16000
+          },
+          {
+            "cell": 257,
+            "value": 16000
+          },
+          {
+            "cell": 258,
+            "value": 16000
+          }
+        ],
+        "interval_kind": "CELL",
+        "intervals": []
+      }
+    },
+    "Temperature": {
+      "name_cell": "Temperature",
+      "name_label_matches_vba": false,
+      "units": "ºC",
+      "active": true,
+      "active_label_present": true,
+      "default": 20,
+      "maximum": 45,
+      "maximum_label_present": true,
+      "minimum": 0,
+      "minimum_label_present": true,
+      "cyclic": true,
+      "cyclic_label_present": true,
+      "left_boundary": 15,
+      "right_boundary": 20,
+      "free_surface_flux": true,
+      "sensible_heat": true,
+      "latent_heat": true,
+      "radiative_heat": true,
+      "anaerobic_respiration": false,
+      "bod_oxygen_half_saturation": 0,
+      "bod_logistic_max": 10000000,
+      "bod_logistic_max_label_present": false,
+      "bod_growth_per_day": 0,
+      "bod_decay_per_day": 0,
+      "bod_decay_label_present": false,
+      "generic_rate": 0,
+      "generic_rate_label_present": false,
+      "generic_rate_units": "T90(Hours)",
+      "initial": {
+        "type": "INTERVAL",
+        "default_cell_value": 20,
+        "default_cell_label_present": true,
+        "cells": [
+          {
+            "cell": 4,
+            "value": 1
+          }
+        ],
+        "interval_kind": "CELL",
+        "intervals": [
+          {
+            "start": 5,
+            "end": 10,
+            "value": 9
+          }
+        ]
+      }
+    },
+    "DO": {
+      "name_cell": "DO",
+      "name_label_matches_vba": false,
+      "units": "mg/L",
+      "active": false,
+      "active_label_present": true,
+      "default": 0,
+      "maximum": 18,
+      "maximum_label_present": true,
+      "minimum": 0,
+      "minimum_label_present": true,
+      "cyclic": false,
+      "cyclic_label_present": false,
+      "left_boundary": 8,
+      "right_boundary": 0,
+      "free_surface_flux": false,
+      "sensible_heat": true,
+      "latent_heat": true,
+      "radiative_heat": true,
+      "anaerobic_respiration": false,
+      "bod_oxygen_half_saturation": 0,
+      "bod_logistic_max": 10000000,
+      "bod_logistic_max_label_present": false,
+      "bod_growth_per_day": 0,
+      "bod_decay_per_day": 0,
+      "bod_decay_label_present": false,
+      "generic_rate": 0,
+      "generic_rate_label_present": false,
+      "generic_rate_units": "T90(Hours)",
+      "initial": {
+        "type": "DEFAULT",
+        "default_cell_value": 10,
+        "default_cell_label_present": true,
+        "cells": [
+          {
+            "cell": 4,
+            "value": 1
+          }
+        ],
+        "interval_kind": "CELL",
+        "intervals": [
+          {
+            "start": 10,
+            "end": 20,
+            "value": 3
+          },
+          {
+            "start": 40,
+            "end": 50,
+            "value": 6
+          },
+          {
+            "start": 60,
+            "end": 70,
+            "value": 9
+          }
+        ]
+      }
+    },
+    "BOD": {
+      "name_cell": "BOD",
+      "name_label_matches_vba": false,
+      "units": "mg/L",
+      "active": false,
+      "active_label_present": true,
+      "default": 5,
+      "maximum": 400,
+      "maximum_label_present": true,
+      "minimum": 0,
+      "minimum_label_present": true,
+      "cyclic": false,
+      "cyclic_label_present": false,
+      "left_boundary": 8,
+      "right_boundary": 0,
+      "free_surface_flux": false,
+      "sensible_heat": true,
+      "latent_heat": true,
+      "radiative_heat": true,
+      "anaerobic_respiration": false,
+      "bod_oxygen_half_saturation": 1,
+      "bod_logistic_max": 12,
+      "bod_logistic_max_label_present": true,
+      "bod_growth_per_day": 0.5,
+      "bod_decay_per_day": 0.2,
+      "bod_decay_label_present": true,
+      "generic_rate": 0,
+      "generic_rate_label_present": false,
+      "generic_rate_units": "T90(Hours)",
+      "initial": {
+        "type": "DEFAULT",
+        "default_cell_value": 8,
+        "default_cell_label_present": true,
+        "cells": [
+          {
+            "cell": 4,
+            "value": 1
+          }
+        ],
+        "interval_kind": "CELL",
+        "intervals": [
+          {
+            "start": 10,
+            "end": 20,
+            "value": 100
+          },
+          {
+            "start": 40,
+            "end": 50,
+            "value": 200
+          },
+          {
+            "start": 60,
+            "end": 70,
+            "value": 300
+          }
+        ]
+      }
+    },
+    "CO2": {
+      "name_cell": "CO2",
+      "name_label_matches_vba": false,
+      "units": "mg/L",
+      "active": false,
+      "active_label_present": true,
+      "default": 0.7,
+      "maximum": 18,
+      "maximum_label_present": true,
+      "minimum": 0,
+      "minimum_label_present": true,
+      "cyclic": false,
+      "cyclic_label_present": false,
+      "left_boundary": 1,
+      "right_boundary": 0,
+      "free_surface_flux": false,
+      "sensible_heat": true,
+      "latent_heat": true,
+      "radiative_heat": true,
+      "anaerobic_respiration": false,
+      "bod_oxygen_half_saturation": 0,
+      "bod_logistic_max": 10000000,
+      "bod_logistic_max_label_present": false,
+      "bod_growth_per_day": 0,
+      "bod_decay_per_day": 0,
+      "bod_decay_label_present": false,
+      "generic_rate": 0,
+      "generic_rate_label_present": false,
+      "generic_rate_units": "T90(Hours)",
+      "initial": {
+        "type": "DEFAULT",
+        "default_cell_value": 1,
+        "default_cell_label_present": true,
+        "cells": [
+          {
+            "cell": 4,
+            "value": 33
+          }
+        ],
+        "interval_kind": "CELL",
+        "intervals": [
+          {
+            "start": 10,
+            "end": 20,
+            "value": 0
+          },
+          {
+            "start": 40,
+            "end": 50,
+            "value": 0.5
+          },
+          {
+            "start": 60,
+            "end": 70,
+            "value": 0.3
+          }
+        ]
+      }
+    }
+  },
+  "graph": {
+    "time_series_cells": [
+      10,
+      30,
+      50,
+      100,
+      199
+    ],
+    "longitudinal_profiles_percent": [
+      0,
+      15,
+      45,
+      60,
+      80,
+      100
+    ],
+    "no_major_gridlines": false,
+    "sheet_order": [
+      "Main",
+      "River",
+      "Atmosphere",
+      "Discharges",
+      "Temperature",
+      "DO",
+      "CO2",
+      "BOD",
+      "Generic",
+      "Graph",
+      "IntegratedAeroResp(kg)",
+      "IntegratedAnaeroResp(kg)",
+      "Sheet1",
+      "Sheet2"
+    ]
+  }
+}

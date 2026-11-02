@@ -1,0 +1,26 @@
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.py[cod]
+.coverage
+htmlcov/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Reference assets stay on the local machine; the app and saved tests use JSON.
+*.xlsm
+*.xlsx
+*.pdf
+~$*
+
+# Operating system and editor artifacts
+.DS_Store
+Thumbs.db
+*.log

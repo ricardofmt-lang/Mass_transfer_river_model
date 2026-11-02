@@ -1,0 +1,29 @@
+
+Sub Run()
+
+    Dim i, icounter, LineNumber As Integer
+    Dim keyword, Filename As String
+    Dim Success As Boolean
+
+Worksheets("Main").Activate
+ 
+ icounter = 0
+ Success = False
+  Do While keyword <> "ExecutableFile:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "ExecutableFile:" Then
+            Filename = ActiveSheet.Cells(icounter, 2)
+            Success = True
+    End If
+  Loop
+
+    If Not Success Then
+            Channel
+     Else
+       Filename = "'" & Filename & "'!Programa"
+       Application.Run Filename
+    End If
+
+End Sub
+

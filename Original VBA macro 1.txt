@@ -1,0 +1,3495 @@
+'Needs to declare all variables
+Option Explicit
+
+'Arrays indexes start on 1
+Option Base 1
+
+Const InputColumnIndex As Integer = 4
+
+
+
+'grid definition
+Type grid
+
+    Length As Double       'Channel Length
+    AreaVertical As Double 'Channel cross Section
+    AreaH As Double        'Cell Horizontal Area
+    waterdepth As Double   'River depth
+    RiverWidth As Double   'River width
+    
+    NC As Integer          'Number of cells of the grid
+    dx As Double           'spatial step of the cells
+    xc() As Double         'distance of cell center to origin
+
+End Type
+
+'flow definition
+Type Flow_properties
+    velocity As Double     'water velocity
+    Diffusivity As Double  'Longitudinal diffusivity
+    Riverslope As Double   'Important for flow turbulence. Is used in the correlation that water-Atmosphere gas exchange
+    
+    DiffusionNr As Double
+    CourantNr As Double
+End Type
+
+Type GasProperties
+     Label As String
+     partialpressure As Double
+     N_HenryConstants As Integer
+     HenryConstValues() As Double
+     MolecularWeight As Double
+End Type
+
+Type Atmosphere
+
+     Temperature As Double   ' Air Temperature (Celsius)
+     windspeed As Double
+     Humidity As Double      'Air Humidity (%)
+     h_min As Double
+     SolarConstant As Double
+     Latitude As Double
+     SkyTemperature As Double
+     SkyTemperatureImposed As Boolean
+     CloudCover As Double    '(%)
+     
+     Tsr As Double           ' Sun Rise hour
+     Tss As Double           ' Sun Set hour
+     
+     Gas() As GasProperties
+
+End Type
+  
+' Parameters to control the program execution
+
+Type Controls
+
+    T As Double                  'Current values time in seconds
+    timedays As Double           'Current values time in Days
+    dt As Double
+    SimulationDuration As Double 'Simulation Duration in seconds
+    
+    printtime As Double          'Time for Printing (seconds)
+    Printnumber As Double        'Number of output (to control the line in the worksheet)
+    NumberOfOutputs As Integer   'Number of outputs
+    DtPrint As Double            'Interval between outputs (seconds)
+    
+    PrintLine As Integer         'Number of the excel line for output
+    FirstPrintLine As Long       'Number of the first line for output
+    FirstOutput As Boolean       'Control variable for output
+    
+    Advection As Boolean         'Control variable for Advection
+    Diffusion As Boolean         'Control variable for Diffusion
+    
+    AdvType As String            'Control variable for Advection method
+    QUICK_UP As Boolean          'Control variable, True if uses Upwind in Steep Gradient cells
+    QUICK_UP_Ratio As Double     'Ratio to use upwind instead of QUICK
+    
+    TimeDiscretisation As String 'Control variable for time discretion type
+    
+End Type
+
+'discharge definition
+Type Discharge_properties
+    Number As Integer 'Discharge number, according to the order specified in the worksheet Discharges
+    name As String    'Name provided in the same WS
+    cell As Integer   'Cell where it is located
+    VolumeRate As Double 'Flow rate or the discharge
+    SpecificValue As Double ' specific value of the property.
+End Type
+
+Type DischargesList
+    NumberOfDischarges As Integer
+    DischargesActive As Boolean
+    Discharge() As Discharge_properties
+End Type
+
+'Boundary definition
+Type BoundaryCondition
+
+    LeftType As Integer
+    LeftValue As Double
+    
+    RightType As Integer
+    RightValue As Double
+    
+    CyclicBoundary As Boolean
+    
+    FreeSurfaceFlux As Boolean
+    FreeSurfaceSensibleHeatFlux As Boolean
+    FreeSurfaceLatentHeatFlux As Boolean
+    FreeSurfaceRadiativeHeatFlux As Boolean
+
+    ValuesForFreeSurfaceGasExchange As GasProperties
+    
+    PropDischarges As DischargesList
+    
+End Type
+
+Type PropCalcMethod
+
+    Method As String
+    
+    Imposed_TimeSeries() As Double
+    N_Instants As Double
+    N_interval As Integer
+    
+    SinusAmplitude As Double
+    SinusPhaseVel As Double
+    SinusPhase As Double
+    SinusAverage As Double
+        
+End Type
+
+'Light Properties
+
+'Property definition
+Type Property
+
+    SheetName As String
+
+    name As String
+    units As String
+    Active As Boolean
+    
+    Old() As Double
+    NewValue() As Double
+    
+
+    Default As Double
+    minimum As Double
+    maximum As Double
+    MinimumActive As Boolean
+    MaximumActive As Boolean
+            
+    DecayOrGrowth As Boolean
+    Decayrate As Double
+    GrowthRate As Double
+    MaxValLogisticEquation As Double
+    GrazingKsat As Double
+    AnaerobicRespiration As Boolean
+    IntegratedAerobicResp() As Double
+    IntegratedAnaerobicResp() As Double
+    
+    Boundary As BoundaryCondition
+    
+    
+End Type
+
+
+'List of properties
+Type PropertiesList
+
+     Generic As Property
+     Temperature As Property
+     DO As Property
+     BOD As Property
+     CO2 As Property
+     
+End Type
+
+'Coefs for transport
+Type Equation_Coef
+
+    A() As Double
+    B() As Double
+    e() As Double
+    f() As Double
+    g() As Double
+    
+    b_up() As Double
+    e_up() As Double
+    f_up() As Double
+  
+    L_LeftCoef() As Double
+    LeftCoef() As Double
+    CenterCoef() As Double
+    RigthCoef() As Double
+    R_RigthCoef() As Double
+    
+    TiCoef() As Double
+End Type
+    
+'Model parameters
+
+
+Sub Channel()
+
+'Main activities:
+      '1-reads parameters
+      '2-computes concentrations
+      '3-outputs results
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+    
+' A0 - Variables Declaration
+    Dim i As Integer
+    Dim ctrl As Controls
+    Dim printCount As Integer
+    
+    Dim gr As grid
+    Dim flow As Flow_properties
+    Dim Coef As Equation_Coef
+    Dim atm As Atmosphere
+    
+    Dim pr As PropertiesList
+ 
+ 'Initializes the model
+ 
+ 'Reads control parameters
+    ctrl = Setcontrols()
+ 'Reads grid parameters
+    gr = CreateGrid()
+ 'Reads flow parameters
+    flow = CreateFlow(gr, ctrl)
+ 'Allocates memory for transport coeficients
+    Coef = CreateCoef(gr.NC)
+    
+'Initializes properties options and values
+    
+    pr.Generic = CreateProperty("Generic", gr, ctrl)
+    pr.Temperature = CreateProperty("Temperature", gr, ctrl)
+    pr.DO = CreateProperty("DO", gr, ctrl)
+    pr.BOD = CreateProperty("BOD", gr, ctrl)
+    pr.CO2 = CreateProperty("CO2", gr, ctrl)
+    
+    
+' Reads Atmosphere Parameters Must apperar after  property creation
+    atm = CreateAtmosphere(pr)
+    
+    If pr.DO.Active And Not pr.Temperature.Active Then
+      MsgBox ("DO active requires Temperature to be active too")
+     End
+    End If
+
+    If pr.BOD.Active And Not pr.DO.Active Then
+      MsgBox ("BOD active requires DO to be active too")
+     Stop
+    End If
+    
+    If pr.CO2.Active And Not (pr.BOD.Active Or pr.DO.Active) Then
+      MsgBox ("CO2 Active require both BOD and DO to be active too")
+     Stop
+    End If
+    
+    
+ 'Prints Initial values
+        If pr.Generic.Active Then
+           Call PrintValues(pr.Generic, gr, ctrl)
+        End If
+        
+        If pr.Temperature.Active Then
+            Call PrintValues(pr.Temperature, gr, ctrl)
+        End If
+        
+        If pr.DO.Active Then
+            Call PrintValues(pr.DO, gr, ctrl)
+        End If
+        
+        If pr.BOD.Active Then
+            Call PrintValues(pr.BOD, gr, ctrl)
+        End If
+
+        If pr.CO2.Active Then
+            Call PrintValues(pr.CO2, gr, ctrl)
+        End If
+' Updates printing control
+    Call UpdatePrinting(ctrl)
+        
+ 'Cycles to compute Properties values from start time up to end time
+    Do While ctrl.T < ctrl.SimulationDuration
+        
+ 'Sets new time and zeros coefficients
+        ctrl.T = ctrl.T + ctrl.dt
+        ctrl.timedays = ctrl.T / 86400
+        Call ZerosCoeffs(Coef, gr)
+        
+'Applies discharges in two halfs. If discharges are applied before transport the maximum value appears in cell after the discharge in the output
+'if discharges are applied only after transport a peack is created in the discharge cell, that increases with the time step. Applying discharges in two half steps minimises the problems
+        If pr.Generic.Active And pr.Generic.Boundary.PropDischarges.DischargesActive Then
+           Call ApplyDischarges(pr.Generic, gr, ctrl.dt)
+        End If
+        
+        If pr.Temperature.Active Then
+        
+          If pr.Temperature.Boundary.PropDischarges.DischargesActive Then
+            Call ApplyDischarges(pr.Temperature, gr, ctrl.dt)
+          End If
+          
+           If pr.Temperature.Boundary.CyclicBoundary Then
+              If flow.velocity > 0 Then
+                 pr.Temperature.Boundary.LeftValue = pr.Temperature.NewValue(gr.NC)
+              Else
+                 pr.Temperature.Boundary.RightValue = pr.Temperature.NewValue(1)
+              End If
+            End If 'CyclicBoundary
+           
+           End If 'pr.Temperature.Active
+        
+        If pr.DO.Active And pr.DO.Boundary.PropDischarges.DischargesActive Then
+            Call ApplyDischarges(pr.DO, gr, ctrl.dt)
+        End If
+        
+        If pr.BOD.Active And pr.BOD.Boundary.PropDischarges.DischargesActive Then
+            Call ApplyDischarges(pr.BOD, gr, ctrl.dt)
+        End If
+        
+        If pr.CO2.Active And pr.CO2.Boundary.PropDischarges.DischargesActive Then
+            Call ApplyDischarges(pr.CO2, gr, ctrl.dt)
+        End If
+        
+' Performs Transport
+        Call CoefTransport(flow, gr.NC, ctrl, Coef)
+         
+        If pr.Generic.Active Then
+           Call Transport(pr.Generic, Coef, gr.NC, ctrl)
+        End If
+        
+        If pr.Temperature.Active Then
+            Call Transport(pr.Temperature, Coef, gr.NC, ctrl)
+        End If
+        
+        If pr.DO.Active Then
+            Call Transport(pr.DO, Coef, gr.NC, ctrl)
+        End If
+        
+        If pr.BOD.Active Then
+            Call Transport(pr.BOD, Coef, gr.NC, ctrl)
+        End If
+        
+         If pr.CO2.Active Then
+            Call Transport(pr.CO2, Coef, gr.NC, ctrl)
+        End If
+       
+        
+' Computes Free surface fluxes
+
+        If pr.Temperature.Active And pr.Temperature.Boundary.FreeSurfaceFlux Then
+             Call ExpFreeSurfaceHeatFluxes(pr.Temperature, gr, ctrl, atm)
+        End If
+         
+        If pr.DO.Active And pr.DO.Boundary.FreeSurfaceFlux Then
+             Call ExpFreeSurfaceGasFluxes(pr.Temperature, pr.DO, gr, ctrl, flow, atm)
+        End If
+        
+        If pr.CO2.Active And pr.CO2.Boundary.FreeSurfaceFlux Then
+             Call ExpFreeSurfaceGasFluxes(pr.Temperature, pr.CO2, gr, ctrl, flow, atm)
+        End If
+        
+  'Updates OD/BOD concentrations by Organic Matter Oxidation
+        
+        If pr.BOD.Active Then
+            Call ExpSinksBOD(pr, gr, ctrl.dt) ' always computed explicitly
+        End If
+        
+        If (pr.Generic.Active And pr.Generic.DecayOrGrowth) Then
+             If (ctrl.TimeDiscretisation = "exp") Then
+                Call ExpSinksGeneric(pr.Generic, gr.NC, ctrl.dt)
+             Else
+                Call ImpTypeSinksGeneric(pr.Generic, gr.NC, ctrl)
+             End If
+        End If 'pr.BOD.Active
+        
+ 'Prints if it is time
+If ctrl.T >= ctrl.printtime Then
+           
+        If pr.Generic.Active Then
+           Call PrintValues(pr.Generic, gr, ctrl)
+        End If
+        
+        If pr.Temperature.Active Then
+            Call PrintValues(pr.Temperature, gr, ctrl)
+           
+        '   Sheets("Temperature").Select
+        '    ActiveSheet.Cells(ctrl.PrintLine, 313) = Solar_Radiation(ctrl.timedays, atm)
+
+        End If
+        
+        If pr.DO.Active Then
+            Call PrintValues(pr.DO, gr, ctrl)
+        End If
+        
+        If pr.BOD.Active Then
+            Call PrintValues(pr.BOD, gr, ctrl)
+        End If
+           
+        If pr.CO2.Active Then
+            Call PrintValues(pr.CO2, gr, ctrl)
+        End If
+           
+        Call UpdatePrinting(ctrl)
+End If 'ctrl.T
+                
+    Loop
+        
+'After reaching  endtime, creates graphs
+    Call CreateGraphs(pr, ctrl, gr.NC)
+        
+    Sheets("Main").Select
+        
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Application.Calculation = xlCalculationAutomatic
+    
+    MsgBox ("The Application Ended")
+        
+End Sub
+
+Sub CoefTransport(flow As Flow_properties, NC As Integer, ctrl As Controls, Coef As Equation_Coef)
+    
+    Dim i As Integer
+
+
+    If ctrl.Diffusion Then
+    
+    ' Diffusion: no Flux at the boundary
+        Coef.A(1) = 0
+        Coef.B(1) = 0
+        Coef.e(1) = -flow.DiffusionNr
+        Coef.f(1) = flow.DiffusionNr
+        Coef.g(1) = 0
+        
+        Coef.A(NC) = 0
+        Coef.B(NC) = flow.DiffusionNr
+        Coef.e(NC) = -flow.DiffusionNr
+        Coef.f(NC) = 0
+        Coef.g(NC) = 0
+ 
+' inner points
+    For i = 2 To NC - 1
+        Coef.A(i) = 0
+        Coef.B(i) = flow.DiffusionNr
+        Coef.e(i) = -2 * flow.DiffusionNr
+        Coef.f(i) = flow.DiffusionNr
+        Coef.g(i) = 0
+      Next
+      
+    End If 'ctrl.Diffusion
+    
+    If ctrl.Advection Then
+    
+      'Computes  coefficients as if it was Upwind. to correct the Quick melhod later
+         
+      If ctrl.AdvType = "upwind" Then ' Advection Upwind
+      
+          If flow.velocity > 0 Then
+            For i = 1 To NC
+                Coef.B(i) = Coef.B(i) + flow.CourantNr
+                Coef.e(i) = Coef.e(i) - flow.CourantNr
+                Coef.f(i) = Coef.f(i)
+            Next
+          Else
+            For i = 1 To NC
+                Coef.B(i) = Coef.B(i)
+                Coef.e(i) = Coef.e(i) + flow.CourantNr
+                Coef.f(i) = Coef.f(i) - flow.CourantNr
+            Next
+       End If
+        
+      
+      ElseIf ctrl.AdvType = "QUICK" Then ' Advection Upwind
+       
+       If ctrl.QUICK_UP Then
+           If flow.velocity > 0 Then
+             For i = 1 To NC
+                Coef.b_up(i) = Coef.B(i) + flow.CourantNr
+                Coef.e_up(i) = Coef.e(i) - flow.CourantNr
+                Coef.f_up(i) = Coef.f(i)
+             Next
+           Else
+             For i = 1 To NC
+                Coef.b_up(i) = Coef.B(i)
+                Coef.e_up(i) = Coef.e(i) + flow.CourantNr
+                Coef.f_up(i) = Coef.f(i) - flow.CourantNr
+             Next
+           End If 'Flow.velocity
+        End If 'QUICK_UP
+      
+          If flow.velocity > 0 Then
+          
+              For i = 2 To NC - 1
+      'contribution of left face concentration
+                Coef.A(i) = Coef.A(i) - 1 / 8 * flow.CourantNr
+                Coef.B(i) = Coef.B(i) + 6 / 8 * flow.CourantNr
+                Coef.e(i) = Coef.e(i) + 3 / 8 * flow.CourantNr
+     'contribution of right face concentration
+                Coef.B(i) = Coef.B(i) + 1 / 8 * flow.CourantNr
+                Coef.e(i) = Coef.e(i) - 6 / 8 * flow.CourantNr
+                Coef.f(i) = Coef.f(i) - 3 / 8 * flow.CourantNr
+              Next
+                Coef.B(1) = Coef.B(1) + 9 / 8 * flow.CourantNr
+                Coef.e(1) = Coef.e(1) - 6 / 8 * flow.CourantNr
+                Coef.f(1) = Coef.f(1) - 3 / 8 * flow.CourantNr
+                
+                Coef.A(NC) = Coef.A(NC) - 1 / 8 * flow.CourantNr
+                Coef.B(NC) = Coef.B(NC) + 6 / 8 * flow.CourantNr
+                Coef.e(NC) = Coef.e(NC) - 5 / 8 * flow.CourantNr
+                Coef.f(NC) = 0
+            
+          Else ' flow.velocity<0
+          
+              For i = 2 To NC - 1
+       'contribution of left face concentration
+                Coef.B(i) = Coef.B(i) + 3 / 8 * flow.CourantNr
+                Coef.e(i) = Coef.e(i) + 6 / 8 * flow.CourantNr
+                Coef.f(i) = Coef.f(i) - 1 / 8 * flow.CourantNr
+       'contribution of right face concentration
+                Coef.e(i) = Coef.e(i) - 3 / 8 * flow.CourantNr
+                Coef.f(i) = Coef.f(i) - 6 / 8 * flow.CourantNr
+                Coef.g(i) = Coef.g(i) + 1 / 8 * flow.CourantNr
+              Next
+            
+                Coef.B(1) = 0
+                Coef.e(1) = Coef.e(1) + 5 / 8 * flow.CourantNr
+                Coef.f(1) = Coef.f(1) - 6 / 8 * flow.CourantNr
+                Coef.g(1) = Coef.g(1) + 1 / 8 * flow.CourantNr
+                
+                Coef.B(NC) = Coef.B(NC) + 3 / 8 * flow.CourantNr
+                Coef.e(NC) = Coef.e(NC) + 6 / 8 * flow.CourantNr
+                Coef.f(NC) = Coef.f(NC) - 9 / 8 * flow.CourantNr
+           
+          End If 'Flow.velocity
+
+        
+      ElseIf ctrl.AdvType = "central" Then
+      
+            For i = 2 To NC - 1
+               Coef.B(i) = Coef.B(i) + flow.CourantNr / 2
+               Coef.f(i) = Coef.f(i) - flow.CourantNr / 2
+            Next
+            
+            If flow.velocity > 0 Then   ' Even with central differences upwind has to be used at the boundaries
+                Coef.B(1) = Coef.B(1) + flow.CourantNr
+                Coef.e(1) = Coef.e(1) - flow.CourantNr
+                Coef.B(NC) = Coef.B(NC) + flow.CourantNr
+                Coef.e(NC) = Coef.e(NC) - flow.CourantNr
+            Else
+                Coef.e(1) = Coef.e(1) + flow.CourantNr
+                Coef.f(1) = Coef.f(1) - flow.CourantNr
+                Coef.e(NC) = Coef.e(NC) + flow.CourantNr
+                Coef.f(NC) = Coef.f(NC) - flow.CourantNr
+            End If
+      Else
+         MsgBox "Advection Type not defined:" & ctrl.AdvType
+      End If
+       
+    End If
+    
+End Sub
+Sub Transport(Prop As Property, Coef As Equation_Coef, NC As Integer, ctrl As Controls)
+
+    If ctrl.AdvType = "QUICK" Then
+       If ctrl.TimeDiscretisation = "exp" Then
+            Call ExpQUICKTransport(Prop, Coef, NC, ctrl)
+       ElseIf ctrl.TimeDiscretisation = "imp" Then
+            Call ImpQUICKTransport(Prop, Coef, NC, ctrl)
+       Else
+            Call SemiImpQUICKTransport(Prop, Coef, NC, ctrl)
+       End If
+    Else
+       If ctrl.TimeDiscretisation = "exp" Then
+            Call ExpTransport(Prop, Coef, NC)
+       ElseIf ctrl.TimeDiscretisation = "imp" Then
+            Call ImpTransport(Prop, Coef, NC)
+       Else
+            Call semiImpTransport(Prop, Coef, NC)
+       End If
+    End If
+
+
+End Sub
+Sub ExpTransport(Prop As Property, Coef As Equation_Coef, NC As Integer)
+    
+    Dim i As Integer
+
+
+'The last computated values are stored in "Old" and coefficient "CenterCoef" is updated for explicit
+    For i = 1 To NC
+        Prop.Old(i) = Prop.NewValue(i)
+        Coef.LeftCoef(i) = Coef.B(i)
+        Coef.CenterCoef(i) = (1 + Coef.e(i))
+        Coef.RigthCoef(i) = Coef.f(i)
+    Next i
+
+'Left Boundary
+    Prop.NewValue(1) = Coef.LeftCoef(1) * Prop.Boundary.LeftValue + Coef.CenterCoef(1) * Prop.Old(1) + Coef.RigthCoef(1) * Prop.Old(2)
+
+'Inner Points
+    For i = 2 To NC - 1
+        Prop.NewValue(i) = Coef.LeftCoef(i) * Prop.Old(i - 1) + Coef.CenterCoef(i) * Prop.Old(i) + Coef.RigthCoef(i) * Prop.Old(i + 1)
+    Next i
+'Right Boundary
+        Prop.NewValue(NC) = Coef.LeftCoef(NC) * Prop.Old(NC - 1) + Coef.CenterCoef(NC) * Prop.Old(NC) + Coef.RigthCoef(NC) * Prop.Boundary.RightValue
+         
+End Sub
+Sub ExpQUICKTransport(Prop As Property, Coef As Equation_Coef, NC As Integer, ctrl As Controls)
+        
+    Dim i As Integer
+    Dim A, B, C As Double
+ 
+'The last computated values are stored in "Old" and coefficient "CenterCoef" is updated for explicit
+    For i = 1 To NC
+    
+        Prop.Old(i) = Prop.NewValue(i)
+        
+        Coef.L_LeftCoef(i) = Coef.A(i)
+        Coef.LeftCoef(i) = Coef.B(i)
+        Coef.CenterCoef(i) = (1 + Coef.e(i))
+        Coef.RigthCoef(i) = Coef.f(i)
+        Coef.R_RigthCoef(i) = Coef.g(i)
+        
+    Next i
+    
+If ctrl.QUICK_UP Then
+
+    For i = 2 To NC - 1
+
+          C = WorksheetFunction.Max(Abs(Prop.Old(i + 1) - Prop.Old(i - 1)), ctrl.QUICK_UP_Ratio * (1 + Prop.minimum)) ' It uses (1 + Prop.minimum) to work also whenProp.minimum is zero.
+          A = WorksheetFunction.Max(Abs(Prop.Old(i) - Prop.Old(i - 1)), ctrl.QUICK_UP_Ratio * (1 + Prop.minimum))     ' If Prop.minimum is zero the values of A, B and C could very small and the test below
+          B = WorksheetFunction.Max(Abs(Prop.Old(i + 1) - Prop.Old(i)), ctrl.QUICK_UP_Ratio * (1 + Prop.minimum))     ' could be verified in areas where property values are negligeable
+
+      If (Abs(A - C) > ctrl.QUICK_UP_Ratio * A Or Abs(B - C) > ctrl.QUICK_UP_Ratio * B) Then ' uses upwind
+         Coef.L_LeftCoef(i) = 0
+         Coef.LeftCoef(i) = Coef.b_up(i)
+         Coef.CenterCoef(i) = 1 + Coef.e_up(i)
+         Coef.RigthCoef(i) = Coef.f_up(i)
+         Coef.R_RigthCoef(i) = 0
+      End If
+      
+    Next i
+    
+End If ' ctrl.QUICK_UP
+
+
+'Left Boundary
+    Prop.NewValue(1) = Coef.LeftCoef(1) * Prop.Boundary.LeftValue + Coef.CenterCoef(1) * Prop.Old(1) + Coef.RigthCoef(1) * Prop.Old(2) + Coef.R_RigthCoef(1) * Prop.Old(3)
+    Prop.NewValue(2) = Coef.L_LeftCoef(2) * Prop.Boundary.LeftValue + Coef.LeftCoef(2) * Prop.Old(1) + Coef.CenterCoef(2) * Prop.Old(2) + Coef.RigthCoef(1) * Prop.Old(3) + Coef.R_RigthCoef(1) * Prop.Old(4)
+
+'Inner Points
+    For i = 3 To NC - 2
+        Prop.NewValue(i) = Coef.L_LeftCoef(i) * Prop.Old(i - 2) + Coef.LeftCoef(i) * Prop.Old(i - 1) + Coef.CenterCoef(i) * Prop.Old(i) + Coef.RigthCoef(i) * Prop.Old(i + 1) + Coef.R_RigthCoef(i) * Prop.Old(i + 2)
+    Next i
+'Right Boundary
+        Prop.NewValue(NC - 1) = Coef.L_LeftCoef(NC - 1) * Prop.Old(NC - 3) + Coef.LeftCoef(NC - 1) * Prop.Old(NC - 2) + Coef.CenterCoef(NC - 1) * Prop.Old(NC - 1) + Coef.RigthCoef(NC - 1) * Prop.Old(NC - 1) + Coef.R_RigthCoef(NC - 1) * Prop.Boundary.RightValue
+        Prop.NewValue(NC) = Coef.L_LeftCoef(NC) * Prop.Old(NC - 2) + Coef.LeftCoef(NC) * Prop.Old(NC - 1) + Coef.CenterCoef(NC) * Prop.Old(NC) + Coef.RigthCoef(NC) * Prop.Boundary.RightValue
+         
+End Sub
+Sub ImpTransport(Prop As Property, Coef As Equation_Coef, NC As Integer)
+    
+    Dim i, iaux As Integer
+    Dim f As Double
+   
+'The last computated values are stored in "Old"
+    For i = 1 To NC
+        Prop.Old(i) = Prop.NewValue(i)
+        Coef.TiCoef(i) = Prop.Old(i)
+        Coef.LeftCoef(i) = -Coef.B(i)
+        Coef.CenterCoef(i) = 1 - Coef.e(i)
+        Coef.RigthCoef(i) = -Coef.f(i)
+    Next i
+
+'Left Boundary
+    Coef.TiCoef(1) = Coef.TiCoef(1) - Coef.LeftCoef(1) * Prop.Boundary.LeftValue
+    Coef.TiCoef(NC) = Coef.TiCoef(NC) - Coef.RigthCoef(NC) * Prop.Boundary.RightValue
+    
+
+'Inner Points
+    For i = 2 To NC
+       f = Coef.LeftCoef(i) / Coef.CenterCoef(i - 1)
+       Coef.LeftCoef(i) = Coef.LeftCoef(i) - f * Coef.CenterCoef(i - 1)
+       Coef.CenterCoef(i) = Coef.CenterCoef(i) - f * Coef.RigthCoef(i - 1)
+       Coef.TiCoef(i) = Coef.TiCoef(i) - f * Coef.TiCoef(i - 1)
+    Next i
+'Right Boundary
+
+    Prop.NewValue(NC) = Coef.TiCoef(NC) / Coef.CenterCoef(NC)
+    
+    For iaux = 1 To NC - 1
+    i = NC - iaux
+    Prop.NewValue(i) = (Coef.TiCoef(i) - Coef.RigthCoef(i) * Prop.NewValue(i + 1)) / Coef.CenterCoef(i)
+    Next iaux
+        
+End Sub
+Sub semiImpTransport(Prop As Property, Coef As Equation_Coef, NC As Integer)
+    
+    Dim i, iaux As Integer
+    Dim f As Double
+   
+'The last computated values are stored in "Old"
+    For i = 1 To NC
+    
+        Prop.Old(i) = Prop.NewValue(i)
+        
+        Coef.TiCoef(i) = Prop.Old(i)
+        Coef.LeftCoef(i) = -Coef.B(i) / 2
+        Coef.CenterCoef(i) = 1 - Coef.e(i) / 2
+        Coef.RigthCoef(i) = -Coef.f(i) / 2
+    Next i
+
+'Left Boundary
+    Coef.TiCoef(1) = Coef.TiCoef(1) - Coef.LeftCoef(1) * Prop.Boundary.LeftValue + 0.5 * (Coef.B(1) * Prop.Boundary.LeftValue + Coef.e(1) * Prop.Old(1) + Coef.f(1) * Prop.Old(2))
+    Coef.TiCoef(NC) = Coef.TiCoef(NC) - Coef.RigthCoef(NC) * Prop.Boundary.RightValue + 0.5 * (Coef.B(NC) * Prop.Old(NC - 1) + Coef.e(NC) * Prop.Old(NC) + Coef.f(NC) * Prop.Boundary.RightValue)
+    
+    For i = 2 To NC - 1
+        Coef.TiCoef(i) = Coef.TiCoef(i) + 0.5 * (Coef.B(i) * Prop.Old(i - 1) + Coef.e(i) * Prop.Old(i) + Coef.f(i) * Prop.Old(i + 1))
+    Next i
+
+'Inner Points
+    For i = 2 To NC
+       f = Coef.LeftCoef(i) / Coef.CenterCoef(i - 1)
+       Coef.LeftCoef(i) = Coef.LeftCoef(i) - f * Coef.CenterCoef(i - 1)
+       Coef.CenterCoef(i) = Coef.CenterCoef(i) - f * Coef.RigthCoef(i - 1)
+       Coef.TiCoef(i) = Coef.TiCoef(i) - f * Coef.TiCoef(i - 1)
+    Next i
+'Right Boundary
+
+    Prop.NewValue(NC) = Coef.TiCoef(NC) / Coef.CenterCoef(NC)
+    
+    For iaux = 1 To NC - 1
+    i = NC - iaux
+    Prop.NewValue(i) = (Coef.TiCoef(i) - Coef.RigthCoef(i) * Prop.NewValue(i + 1)) / Coef.CenterCoef(i)
+    Next iaux
+        
+End Sub
+
+Sub ImpQUICKTransport(Prop As Property, Coef As Equation_Coef, NC As Integer, ctrl As Controls)
+    
+    Dim i, iaux As Integer
+    Dim f, A, B, C As Double
+   
+   
+'The last computated values are stored in "Old"
+    For i = 1 To NC
+    
+        Prop.Old(i) = Prop.NewValue(i)
+        Coef.TiCoef(i) = Prop.Old(i)
+        
+        Coef.L_LeftCoef(i) = -Coef.A(i)
+        Coef.LeftCoef(i) = -Coef.B(i)
+        Coef.CenterCoef(i) = 1 - Coef.e(i)
+        Coef.RigthCoef(i) = -Coef.f(i)
+        Coef.R_RigthCoef(i) = -Coef.g(i)
+        
+    Next i
+    
+If ctrl.QUICK_UP Then
+
+    For i = 2 To NC - 1
+
+          C = WorksheetFunction.Max(Abs(Prop.Old(i + 1) - Prop.Old(i - 1)), ctrl.QUICK_UP_Ratio * (1 + Prop.minimum)) ' It uses (1 + Prop.minimum) to work also whenProp.minimum is zero.
+          A = WorksheetFunction.Max(Abs(Prop.Old(i) - Prop.Old(i - 1)), ctrl.QUICK_UP_Ratio * (1 + Prop.minimum))     ' If Prop.minimum is zero the values of A, B and C could very small and the test below
+          B = WorksheetFunction.Max(Abs(Prop.Old(i + 1) - Prop.Old(i)), ctrl.QUICK_UP_Ratio * (1 + Prop.minimum))     ' could be verified in areas where property values are negligeable
+
+      If (Abs(A - C) > ctrl.QUICK_UP_Ratio * A Or Abs(B - C) > ctrl.QUICK_UP_Ratio * B) Then ' uses upwind
+         Coef.L_LeftCoef(i) = 0
+         Coef.LeftCoef(i) = -Coef.b_up(i)
+         Coef.CenterCoef(i) = 1 - Coef.e_up(i)
+         Coef.RigthCoef(i) = -Coef.f_up(i)
+         Coef.R_RigthCoef(i) = 0
+      End If
+      
+    Next i
+    
+End If ' ctrl.QUICK_UP
+
+
+'Left Boundary
+
+    Coef.TiCoef(1) = Coef.TiCoef(1) - Coef.LeftCoef(1) * Prop.Boundary.LeftValue
+    Coef.TiCoef(2) = Coef.TiCoef(2) - Coef.L_LeftCoef(2) * Prop.Boundary.LeftValue
+    
+    Coef.TiCoef(NC - 1) = Coef.TiCoef(NC - 1) - Coef.R_RigthCoef(NC - 1) * Prop.Boundary.RightValue
+    Coef.TiCoef(NC) = Coef.TiCoef(NC) - Coef.RigthCoef(NC) * Prop.Boundary.RightValue
+
+    
+'Inner Points
+
+    For i = 3 To NC
+    
+       f = Coef.LeftCoef(i - 1) / Coef.CenterCoef(i - 2)
+       Coef.LeftCoef(i - 1) = Coef.LeftCoef(i - 1) - f * Coef.CenterCoef(i - 2)
+       Coef.CenterCoef(i - 1) = Coef.CenterCoef(i - 1) - f * Coef.RigthCoef(i - 2)
+       Coef.RigthCoef(i - 1) = Coef.RigthCoef(i - 1) - f * Coef.R_RigthCoef(i - 2)
+       Coef.TiCoef(i - 1) = Coef.TiCoef(i - 1) - f * Coef.TiCoef(i - 2)
+    
+       f = Coef.L_LeftCoef(i) / Coef.CenterCoef(i - 2)
+       Coef.L_LeftCoef(i) = Coef.L_LeftCoef(i) - f * Coef.CenterCoef(i - 2)
+       Coef.LeftCoef(i) = Coef.LeftCoef(i) - f * Coef.RigthCoef(i - 2)
+       Coef.CenterCoef(i) = Coef.CenterCoef(i) - f * Coef.R_RigthCoef(i - 2)
+       Coef.TiCoef(i) = Coef.TiCoef(i) - f * Coef.TiCoef(i - 2)
+    Next i
+    
+       f = Coef.LeftCoef(NC) / Coef.CenterCoef(NC - 1)
+       Coef.LeftCoef(NC) = Coef.LeftCoef(NC) - f * Coef.CenterCoef(NC - 1)
+       Coef.CenterCoef(NC) = Coef.CenterCoef(NC) - f * Coef.RigthCoef(NC - 1)
+       Coef.RigthCoef(NC) = Coef.RigthCoef(NC) - f * Coef.R_RigthCoef(NC - 1)
+       Coef.TiCoef(NC) = Coef.TiCoef(NC) - f * Coef.TiCoef(NC - 1)
+    
+    'Inner Points
+'Right Boundary
+
+    Prop.NewValue(NC) = Coef.TiCoef(NC) / Coef.CenterCoef(NC)
+    Prop.NewValue(NC - 1) = (Coef.TiCoef(NC - 1) - Coef.RigthCoef(NC - 1) * Prop.NewValue(NC)) / Coef.CenterCoef(NC - 1)
+    
+    For iaux = 2 To NC - 1
+    i = NC - iaux
+    Prop.NewValue(i) = (Coef.TiCoef(i) - Coef.RigthCoef(i) * Prop.NewValue(i + 1) - Coef.R_RigthCoef(i) * Prop.NewValue(i + 2)) / Coef.CenterCoef(i)
+    Next iaux
+        
+End Sub
+
+Sub SemiImpQUICKTransport(Prop As Property, Coef As Equation_Coef, NC As Integer, ctrl As Controls)
+    
+    Dim i, iaux As Integer
+    Dim f As Double
+    Dim A, B, C As Double
+   
+   
+'The last computated values are stored in "Old"
+    For i = 1 To NC
+    
+        Prop.Old(i) = WorksheetFunction.Max(Prop.NewValue(i), Prop.minimum)
+        Coef.TiCoef(i) = Prop.Old(i)
+        
+        Coef.L_LeftCoef(i) = -Coef.A(i) / 2
+        Coef.LeftCoef(i) = -Coef.B(i) / 2
+        Coef.CenterCoef(i) = 1 - Coef.e(i) / 2
+        Coef.RigthCoef(i) = -Coef.f(i) / 2
+        Coef.R_RigthCoef(i) = -Coef.g(i) / 2
+        
+    Next i
+
+If ctrl.QUICK_UP Then
+
+    For i = 2 To NC - 1
+
+          C = WorksheetFunction.Max(Abs(Prop.Old(i + 1) - Prop.Old(i - 1)), ctrl.QUICK_UP_Ratio * (1 + Prop.minimum)) ' It uses (1 + Prop.minimum) to work also whenProp.minimum is zero.
+          A = WorksheetFunction.Max(Abs(Prop.Old(i) - Prop.Old(i - 1)), ctrl.QUICK_UP_Ratio * (1 + Prop.minimum))     ' If Prop.minimum is zero the values of A, B and C could very small and the test below
+          B = WorksheetFunction.Max(Abs(Prop.Old(i + 1) - Prop.Old(i)), ctrl.QUICK_UP_Ratio * (1 + Prop.minimum))     ' could be verified in areas where property values are negligeable
+
+      If (Abs(A - C) > ctrl.QUICK_UP_Ratio * A Or Abs(B - C) > ctrl.QUICK_UP_Ratio * B) Then ' uses upwind
+         Coef.L_LeftCoef(i) = 0
+         Coef.LeftCoef(i) = -Coef.b_up(i) / 2
+         Coef.CenterCoef(i) = 1 - Coef.e_up(i) / 2
+         Coef.RigthCoef(i) = -Coef.f_up(i) / 2
+         Coef.R_RigthCoef(i) = 0
+      End If
+      
+    Next i
+    
+End If ' ctrl.QUICK_UP
+
+'Left Boundary
+
+    Coef.TiCoef(1) = Coef.TiCoef(1) - 2 * Coef.LeftCoef(1) * Prop.Boundary.LeftValue - (Coef.CenterCoef(1) - 1) * Prop.Old(1) - Coef.RigthCoef(1) * Prop.Old(2) - Coef.R_RigthCoef(1) * Prop.Old(3)
+    Coef.TiCoef(2) = Coef.TiCoef(2) - 2 * Coef.L_LeftCoef(2) * Prop.Boundary.LeftValue - Coef.LeftCoef(2) * Prop.Old(1) - (Coef.CenterCoef(2) - 1) * Prop.Old(2) - Coef.RigthCoef(2) * Prop.Old(3) - Coef.R_RigthCoef(2) * Prop.Old(4)
+
+    
+    Coef.TiCoef(NC - 1) = Coef.TiCoef(NC - 1) - Coef.L_LeftCoef(NC - 1) * Prop.Old(NC - 3) - Coef.LeftCoef(NC - 1) * Prop.Old(NC - 2) - (Coef.CenterCoef(NC - 1) - 1) * Prop.Old(NC - 1) - Coef.RigthCoef(NC - 1) * Prop.Old(NC) - 2 * Coef.R_RigthCoef(NC - 1) * Prop.Boundary.RightValue
+    Coef.TiCoef(NC) = Coef.TiCoef(NC) - Coef.L_LeftCoef(NC) * Prop.Old(NC - 2) - Coef.LeftCoef(NC) * Prop.Old(NC - 1) - (Coef.CenterCoef(NC) - 1) * Prop.Old(NC) - 2 * Coef.RigthCoef(NC) * Prop.Boundary.RightValue
+
+    For i = 3 To NC - 2
+        Coef.TiCoef(i) = Coef.TiCoef(i) - Coef.L_LeftCoef(i) * Prop.Old(i - 2) - Coef.LeftCoef(i) * Prop.Old(i - 1) - (Coef.CenterCoef(i) - 1) * Prop.Old(i) - Coef.RigthCoef(i) * Prop.Old(i + 1) - Coef.R_RigthCoef(i) * Prop.Old(i + 2)
+    Next i
+
+    
+'Inner Points
+
+    For i = 3 To NC
+    
+       f = Coef.LeftCoef(i - 1) / Coef.CenterCoef(i - 2)
+       Coef.LeftCoef(i - 1) = Coef.LeftCoef(i - 1) - f * Coef.CenterCoef(i - 2)
+       Coef.CenterCoef(i - 1) = Coef.CenterCoef(i - 1) - f * Coef.RigthCoef(i - 2)
+       Coef.RigthCoef(i - 1) = Coef.RigthCoef(i - 1) - f * Coef.R_RigthCoef(i - 2)
+       Coef.TiCoef(i - 1) = Coef.TiCoef(i - 1) - f * Coef.TiCoef(i - 2)
+    
+       f = Coef.L_LeftCoef(i) / Coef.CenterCoef(i - 2)
+       Coef.L_LeftCoef(i) = Coef.L_LeftCoef(i) - f * Coef.CenterCoef(i - 2)
+       Coef.LeftCoef(i) = Coef.LeftCoef(i) - f * Coef.RigthCoef(i - 2)
+       Coef.CenterCoef(i) = Coef.CenterCoef(i) - f * Coef.R_RigthCoef(i - 2)
+       Coef.TiCoef(i) = Coef.TiCoef(i) - f * Coef.TiCoef(i - 2)
+    Next i
+    
+       f = Coef.LeftCoef(NC) / Coef.CenterCoef(NC - 1)
+       Coef.LeftCoef(NC) = Coef.LeftCoef(NC) - f * Coef.CenterCoef(NC - 1)
+       Coef.CenterCoef(NC) = Coef.CenterCoef(NC) - f * Coef.RigthCoef(NC - 1)
+       Coef.RigthCoef(NC) = Coef.RigthCoef(NC) - f * Coef.R_RigthCoef(NC - 1)
+       Coef.TiCoef(NC) = Coef.TiCoef(NC) - f * Coef.TiCoef(NC - 1)
+    
+    'Inner Points
+'Right Boundary
+
+    Prop.NewValue(NC) = Coef.TiCoef(NC) / Coef.CenterCoef(NC)
+    Prop.NewValue(NC - 1) = (Coef.TiCoef(NC - 1) - Coef.RigthCoef(NC - 1) * Prop.NewValue(NC)) / Coef.CenterCoef(NC - 1)
+    
+    For iaux = 2 To NC - 1
+    i = NC - iaux
+    Prop.NewValue(i) = (Coef.TiCoef(i) - Coef.RigthCoef(i) * Prop.NewValue(i + 1) - Coef.R_RigthCoef(i) * Prop.NewValue(i + 2)) / Coef.CenterCoef(i)
+    Next iaux
+        
+End Sub
+Sub ApplyDischarges(Prop As Property, gr As grid, dt As Double)
+    
+    Dim i, Ncell As Integer
+    Dim VolumeRate, SpecificValue As Double
+    Dim aux As Double
+    
+
+    For i = 1 To Prop.Boundary.PropDischarges.NumberOfDischarges
+    
+      Ncell = Prop.Boundary.PropDischarges.Discharge(i).cell
+      VolumeRate = Prop.Boundary.PropDischarges.Discharge(i).VolumeRate
+      SpecificValue = Prop.Boundary.PropDischarges.Discharge(i).SpecificValue
+      Prop.NewValue(Ncell) = (Prop.NewValue(Ncell) * (gr.AreaVertical * gr.dx) + (VolumeRate * SpecificValue * dt)) / (gr.AreaVertical * gr.dx + VolumeRate * dt)
+    Next
+
+
+End Sub
+Sub ExpFreeSurfaceHeatFluxes(Temperature As Property, gr As grid, ctrl As Controls, atm As Atmosphere)
+    
+    Dim ro, cp, hfg, cB As Double
+    Dim FluxConv As Double
+    Dim FluxLatent As Double
+    Dim FluxRadiation As Double
+    Dim SolarFlux As Double
+    Dim i As Integer
+    
+    ro = 1000 'kg/m3
+    cp = 4180 'J/kg
+    hfg = 2450000 'J/kg - Evaporation heat
+    cB = 0.62 'mb/K
+    
+    
+    For i = 1 To gr.NC
+      SolarFlux = Solar_Radiation(ctrl.timedays, atm)
+      Temperature.NewValue(i) = Temperature.NewValue(i) + ctrl.dt * SolarFlux / (ro * cp * gr.waterdepth)
+    Next i
+
+    
+    If Temperature.Boundary.FreeSurfaceSensibleHeatFlux Then
+    For i = 1 To gr.NC
+      FluxConv = cB * h(atm.windspeed, atm.h_min) * (atm.Temperature - Temperature.NewValue(i)) 'W/m2
+      Temperature.NewValue(i) = Temperature.NewValue(i) + ctrl.dt * FluxConv / (ro * cp * gr.waterdepth)
+    Next i
+    End If
+
+    
+    If Temperature.Boundary.FreeSurfaceLatentHeatFlux Then
+    For i = 1 To gr.NC
+      FluxLatent = -h(atm.windspeed, atm.h_min) * (Es(Temperature.NewValue(i)) - atm.Humidity * Es(atm.Temperature)) 'W/m2
+       If (FluxLatent) > 0 Then
+           FluxLatent = 0
+       End If
+      Temperature.NewValue(i) = Temperature.NewValue(i) + ctrl.dt * FluxLatent / (ro * cp * gr.waterdepth)
+    Next i
+    End If
+    
+    If Temperature.Boundary.FreeSurfaceRadiativeHeatFlux Then
+    For i = 1 To gr.NC
+      FluxRadiation = FluxRadiative(Temperature.NewValue(i), atm)
+      Temperature.NewValue(i) = Temperature.NewValue(i) + ctrl.dt * FluxRadiation / (ro * cp * gr.waterdepth)
+    Next i
+    End If
+   
+End Sub
+Function Solar_Radiation(timedays, atm As Atmosphere) As Double
+Dim IM As Double
+Dim Pi, AtmosphericAbsorption, hour As Double
+
+
+   Pi = 3.14159265358979
+   AtmosphericAbsorption = 0.23 ' Value measured by NASA
+   
+   IM = atm.SolarConstant * Cos(atm.Latitude * Pi / 180) * (1 - AtmosphericAbsorption)
+   hour = (timedays - Fix(timedays)) * 24
+   
+   If hour < atm.Tsr Or hour > atm.Tss Then
+   Solar_Radiation = 0
+   Else
+   Solar_Radiation = (1 - 0.75 * (atm.CloudCover) ^ 3) * IM * Sin(Pi * (hour - atm.Tsr) / (atm.Tss - atm.Tsr)) ' cloud cover solar radiation reduction according https://scool.larc.nasa.gov/lesson_plans/CloudCoverSolarRadiation.pdf
+   End If
+   
+End Function
+Sub ExpFreeSurfaceGasFluxes(Temperature As Property, Gas As Property, gr As grid, ctrl As Controls, flow As Flow_properties, atm As Atmosphere)
+ Dim i, k, krg As Integer
+ Dim Csat, K_Gas_exchange As Double
+ Dim GasProp, GasFlux, GasChange, Slope As Double
+ 
+ 
+  For i = 1 To gr.NC
+ 
+  Csat = getCsat_Henry(Gas, Temperature.NewValue(i))
+  
+  'K_Gas_exchange = KGas(Temperature.NewValue(i), flow.velocity, gr.waterdepth)
+   K_Gas_exchange = (1 / gr.waterdepth) * 0.142 * (Abs(atm.windspeed) + 0.1) * (flow.Riverslope + 0.00001) ' to be always higher than zero.
+  'K_Gas_exchange = (1 / gr.waterdepth) * 0.142 * (Abs(atm.windspeed)) * (flow.Riverslope + 0.0001)  ' to be always higher than zero.
+  
+  If (Csat - Gas.NewValue(i)) < 0 Then
+       K_Gas_exchange = K_Gas_exchange * (1 + 20 * (Gas.NewValue(i) - Csat) / (Csat + Gas.NewValue(i))) 'If oversaturated buibbles are formed. The exchange coefficient is increased in that case
+  End If
+  
+       Gas.NewValue(i) = (Gas.NewValue(i) + ctrl.dt * K_Gas_exchange * Csat) / (1 + ctrl.dt * K_Gas_exchange) 'implicit calculatin for stability reasons
+  
+ Next i
+ 
+End Sub
+
+
+Function KGas(watertemperature As Double, velocity As Double, depth As Double)
+Dim k As Double
+
+k = 3.9 * ((Abs(velocity) + 0.001) / depth) ^ 0.5 ' the value 0.001 aims to guarantee that k is always larger than zero
+KGas = k * 1.024 ^ (watertemperature - 20)
+
+End Function
+
+Function Kd_BOD(Oxygen As Double, BOD As Property, Temperature As Double) As Double
+Dim kd As Double
+    
+   If Oxygen > 0 Then
+      kd = BOD.Decayrate * (Oxygen / (BOD.GrazingKsat + Oxygen + 0.01))
+      Kd_BOD = kd * 1.047 ^ (Temperature - 20)
+   Else
+      Kd_BOD = 0
+   End If
+    
+End Function
+
+Function getCsat_Henry(Prop As Property, WaterTemp As Double) As Double
+ Dim J, JJ As Integer
+ Dim Csat As Double
+ Dim Slope, K_Henry_Interpolated As Double
+  
+
+ J = 1
+ JJ = 1
+Do While JJ <= Prop.Boundary.ValuesForFreeSurfaceGasExchange.N_HenryConstants
+    JJ = JJ + 1
+    If (WaterTemp > Prop.Boundary.ValuesForFreeSurfaceGasExchange.HenryConstValues(1, J)) Then 'Temperature
+          J = J + 1
+    End If
+Loop
+ 
+ If J = 1 Then
+  getCsat_Henry = Prop.Boundary.ValuesForFreeSurfaceGasExchange.HenryConstValues(2, 1) * _
+                  Prop.Boundary.ValuesForFreeSurfaceGasExchange.partialpressure * Prop.Boundary.ValuesForFreeSurfaceGasExchange.MolecularWeight 'Molecular weight is in mg/mole
+ ElseIf J > Prop.Boundary.ValuesForFreeSurfaceGasExchange.N_HenryConstants Then
+  getCsat_Henry = Prop.Boundary.ValuesForFreeSurfaceGasExchange.HenryConstValues(2, Prop.Boundary.ValuesForFreeSurfaceGasExchange.N_HenryConstants) * _
+                  Prop.Boundary.ValuesForFreeSurfaceGasExchange.partialpressure * Prop.Boundary.ValuesForFreeSurfaceGasExchange.MolecularWeight
+ Else
+   Slope = (Prop.Boundary.ValuesForFreeSurfaceGasExchange.HenryConstValues(2, J) - Prop.Boundary.ValuesForFreeSurfaceGasExchange.HenryConstValues(2, J - 1)) / _
+           (Prop.Boundary.ValuesForFreeSurfaceGasExchange.HenryConstValues(1, J) - Prop.Boundary.ValuesForFreeSurfaceGasExchange.HenryConstValues(1, J - 1))
+   K_Henry_Interpolated = Prop.Boundary.ValuesForFreeSurfaceGasExchange.HenryConstValues(2, J - 1) + Slope * (WaterTemp - Prop.Boundary.ValuesForFreeSurfaceGasExchange.HenryConstValues(1, J - 1))
+   getCsat_Henry = K_Henry_Interpolated * Prop.Boundary.ValuesForFreeSurfaceGasExchange.partialpressure * Prop.Boundary.ValuesForFreeSurfaceGasExchange.MolecularWeight
+
+ End If
+
+End Function
+Function h(windspeed As Double, h_min As Double) As Double
+   h = h_min + 0.345 * windspeed ^ 2
+End Function
+Function Es(T As Double) As Double
+
+Const A = 6.112 'Pa
+Const B = 17.67
+Const C = 243.5 'ºC
+Dim aux As Double
+
+   aux = B * T / (T + C)
+   Es = A * Exp(aux)
+   
+End Function
+Function FluxRadiative(watertemperature As Double, atm As Atmosphere) As Double
+Dim epson As Double
+Dim Sigma As Double
+
+epson = 0.97
+Sigma = 5.67 * 10 ^ -8 'W/m2/k4
+ If atm.SkyTemperatureImposed Then
+    FluxRadiative = epson * Sigma * ((atm.SkyTemperature + 273.15) ^ 4 - (watertemperature + 273.15) ^ 4)
+ Else
+    FluxRadiative = epson * Sigma * ((9.37 * 10 ^ -6 * (atm.Temperature + 273.15) ^ 6 * (1 + 0.17 * atm.CloudCover ^ 2)) - (watertemperature + 273.15) ^ 4)
+ End If
+End Function
+Sub ExpSinksGeneric(Generic As Property, NC As Integer, dt As Double)
+    
+    Dim i As Integer
+    
+    If Generic.MinimumActive Then
+       For i = 1 To NC
+        Generic.NewValue(i) = Application.Max(Generic.NewValue(i) * (1 + Generic.Decayrate * dt), Generic.minimum)
+       Next i
+    Else
+       For i = 1 To NC
+        Generic.NewValue(i) = Generic.NewValue(i) * (1 + Generic.Decayrate * dt)
+       Next i
+    End If
+    
+End Sub
+Sub ExpSinksBOD(pr As PropertiesList, gr As grid, dt As Double)
+    
+    Dim i As Integer
+    Dim Decayrate, AerobicDecayRate, BODdecay, BODbeforeDecay, AnaerobicDecayRate, AnaerobicDecay, TemperatureAcceleration, aux As Double
+    
+    For i = 1 To gr.NC
+    
+    ' The logistic approach attempts to mimetize the natural growth of BOD due to primary production. Because BOD can be discharged
+    ' from lateral boundaries it performs a test to the value of BOD. It is modified only if it is below the max value associated to the
+    ' logistic equation. Otherwise the parenthesis woul become negative and it would generate an additional (unrealistic) decay
+    ' It adds the decay to the growth rate because  phytoplankton growthrate is measured oindependently of the decay.
+    ' The exponent 1/2 smoothes the curvature of the BOD profile when it is decaying from a peack of a discharge to the logistic value.
+        
+      If pr.BOD.NewValue(i) < pr.BOD.MaxValLogisticEquation Then
+         pr.BOD.NewValue(i) = pr.BOD.NewValue(i) * (1 + dt * (pr.BOD.Decayrate + pr.BOD.GrowthRate) * (1 - pr.BOD.NewValue(i) / pr.BOD.MaxValLogisticEquation) ^ 0.5)
+      End If
+      
+      BODbeforeDecay = pr.BOD.NewValue(i)
+      TemperatureAcceleration = 1.047 ^ (pr.Temperature.NewValue(i) - 20)
+      Decayrate = TemperatureAcceleration * pr.BOD.Decayrate * (pr.DO.NewValue(i) / (pr.BOD.GrazingKsat + pr.DO.NewValue(i) + 0.01)) ' adds 0.01 to minimize impacts of eventual negative values
+
+      BODdecay = pr.BOD.NewValue(i) * Decayrate * dt
+      
+      If BODdecay > (BODbeforeDecay + pr.BOD.minimum) Then ' checks if available BOD is higher then decay
+        BODdecay = BODbeforeDecay - pr.BOD.minimum
+      End If
+      
+      If BODdecay > (pr.DO.NewValue(i) + pr.DO.minimum) Then ' checks if there is enough DO to mineralise the BODdecay
+       BODdecay = pr.DO.NewValue(i) - pr.DO.minimum
+      End If
+      
+      AerobicDecayRate = BODdecay / pr.BOD.NewValue(i) / dt 'value updated after the constrains
+      
+      pr.BOD.NewValue(i) = BODbeforeDecay - BODdecay        ' updates the values of the state variables
+      pr.DO.NewValue(i) = pr.DO.NewValue(i) - BODdecay
+      pr.CO2.NewValue(i) = pr.CO2.NewValue(i) + (BODdecay * (44 / 32)) 'stoichiometric ratio (CO2/O2)
+      pr.BOD.IntegratedAerobicResp(i) = pr.BOD.IntegratedAerobicResp(i) + BODdecay * gr.dx * gr.RiverWidth * gr.waterdepth / 1000 ' to get kilograms per timestep
+      
+      If pr.BOD.AnaerobicRespiration Then  ' If DOD decay due to aerobic respiration is lower that the maximum, it adds the difference to anaerobic respiration
+      
+         AnaerobicDecayRate = TemperatureAcceleration * pr.BOD.Decayrate - AerobicDecayRate ' If anaerobic respiration is allowed, the total decayrate  will be the value imposed. The anaerobic respiration will not consume Oxygen
+         aux = pr.BOD.NewValue(i)
+         pr.BOD.NewValue(i) = pr.BOD.NewValue(i) / (1 + AnaerobicDecayRate * dt)  ' implicit calculation
+         
+         AnaerobicDecay = aux - pr.BOD.NewValue(i)
+         
+         'pr.BOD.IntegratedAnaerobicResp(i) = pr.BOD.IntegratedAnaerobicResp(i) + (AnaerobicDecayRate * pr.BOD.NewValue(i) * dt) * gr.dx * gr.RiverWidth * gr.waterdepth / 1000 'to get kilograms
+         
+         pr.BOD.IntegratedAnaerobicResp(i) = pr.BOD.IntegratedAnaerobicResp(i) + AnaerobicDecay * gr.dx * gr.RiverWidth * gr.waterdepth / 1000 'to get kilograms
+    
+         pr.CO2.NewValue(i) = pr.CO2.NewValue(i) + 0.5 * (AnaerobicDecay * (44 / 32)) 'the other half of anaerobic respiration produces methane and not CO2
+
+      End If
+      
+    Next i
+   
+End Sub
+
+
+
+Sub ImpTypeSinksGeneric(Generic As Property, NC As Integer, ctrl As Controls)
+        'Added by Ramiro
+        
+    Dim i As Integer
+    
+    'Old Saving the last computation
+    'New will be computed
+    For i = 1 To NC
+        Generic.Old(i) = Generic.NewValue(i)
+    Next i
+    If ctrl.TimeDiscretisation = "imp" Then
+       For i = 1 To NC
+        Generic.NewValue(i) = Generic.Old(i) / (1 - Generic.Decayrate * ctrl.dt)
+       Next i
+    Else  ' else must be semi-implicit
+       For i = 1 To NC
+               Generic.NewValue(i) = Generic.NewValue(i) * (1 + Generic.Decayrate * ctrl.dt / 2) / (1 - Generic.Decayrate * ctrl.dt / 2)
+       Next i
+    End If
+    
+End Sub
+
+
+
+Function minimum(ParamArray Values() As Variant)
+'Determine Minimum Value from a Parameter Array (also works for nested array or a multiple column range)
+'Returns minimum value from a Parameter Array (also works for nested array or a multiple column range).
+   
+Dim Item As Variant
+Dim part As Variant
+   
+For Each Item In Values
+
+  If IsArray(Item) Then
+  'Checks if an item in the array of Values is itself an array (viz. nested array) and determines minimum value therein
+      For Each part In Item
+       minimum = minimum(part, minimum)
+      Next
+  Else
+  'If an item in the array of Values is not an array
+      If IsEmpty(minimum) Then
+          minimum = Item
+      Else
+         If Item < minimum And Not IsEmpty(Item) Then
+          minimum = Item
+         End If
+      End If
+      
+' Forma da funçãpo que alguém me deu. Eliminei o "not" no teste para ficaar mais facil de ler. Ramiro
+'      If Not IsEmpty(minimum) Then
+'        If Item < minimum And Not IsEmpty(Item) Then
+'         minimum = Item
+'        End If
+'      Else
+'         minimum = Item
+'      End If
+
+  End If
+ 
+Next
+   
+End Function
+
+Sub ZerosCoeffs(Coef As Equation_Coef, gr As grid)
+    
+    Dim i As Integer
+
+' initialises coefficients with values that would generate zero values for properties
+
+    For i = 1 To gr.NC
+    
+       Coef.A(i) = 0
+       Coef.B(i) = 0
+       Coef.e(i) = 0
+       Coef.f(i) = 0
+       Coef.g(i) = 0
+
+       Coef.L_LeftCoef(i) = 0
+       Coef.LeftCoef(i) = 0
+       Coef.CenterCoef(i) = 0
+       Coef.RigthCoef(i) = 0
+       Coef.R_RigthCoef(i) = 0
+       
+       Coef.TiCoef(i) = 0
+    Next
+    
+End Sub
+
+Function Setcontrols() As Controls
+    
+    Dim keyword, auxstring As String
+    Dim icounter As Integer
+    Dim Success As Boolean
+    
+
+    Worksheets("Main").Activate
+    
+    
+
+    icounter = 0
+    Success = False
+    Do While keyword <> "TimeDiscretisation:" And icounter < 20
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "TimeDiscretisation:" Then
+        Success = True
+        auxstring = ActiveSheet.Cells(icounter, 2)
+      If Not ((auxstring = "imp") Or (auxstring = "IMP") Or (auxstring = "Imp") Or (auxstring = "exp") Or (auxstring = "EXP") Or (auxstring = "Exp") Or (auxstring = "semi") Or (auxstring = "Semi") Or (auxstring = "SEMI")) Then
+       MsgBox "Time Discretisation Type: " & auxstring & " is uknknown"
+      End
+     End If
+    
+      If ((auxstring = "exp") Or (auxstring = "EXP") Or (auxstring = "Exp")) Then
+         Setcontrols.TimeDiscretisation = "exp"
+        ElseIf (auxstring = "imp") Or (auxstring = "IMP") Or (auxstring = "Imp") Then
+         Setcontrols.TimeDiscretisation = "imp"
+        Else
+         Setcontrols.TimeDiscretisation = "semi"
+      End If
+     End If
+Loop
+If (Not Success) Then
+     MsgBox ("TimeDiscretisation: not found")
+     Stop
+End If
+
+
+   
+'Reads data to define the duration of the siumulation and the 'time step
+    icounter = 0
+    Success = False
+    Do While keyword <> "SimulationDuration(Days):" And icounter < 20
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "SimulationDuration(Days):" Then
+        Success = True
+        Setcontrols.SimulationDuration = ActiveSheet.Cells(icounter, 2) * 24 * 3600 ' transforms days into seconds
+    End If
+Loop
+If (Not Success) Then
+     MsgBox ("SimulationDuration: not found")
+     Stop
+End If
+
+    icounter = 0
+    Success = False
+    Do While keyword <> "TimeStep(Seconds):" And icounter < 20
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "TimeStep(Seconds):" Then
+        Success = True
+        Setcontrols.dt = ActiveSheet.Cells(icounter, 2)
+    End If
+Loop
+If (Not Success) Then
+     MsgBox ("TimeStep(Seconds): not found")
+     Stop
+End If
+
+'Reads data to define the instants of the outputs
+    icounter = 0
+    Success = False
+    Do While keyword <> "Dtprint(seconds):" And icounter < 20
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "Dtprint(seconds):" Then
+        Success = True
+        Setcontrols.DtPrint = ActiveSheet.Cells(icounter, 2)
+    End If
+Loop
+If (Not Success) Then
+     MsgBox ("DTprint(Seconds): not found")
+     Stop
+End If
+    
+    Setcontrols.NumberOfOutputs = Setcontrols.SimulationDuration / Setcontrols.DtPrint
+    
+'Imposes the lines where results are going to be printed
+
+    Setcontrols.T = 0
+    Setcontrols.printtime = 0
+    Setcontrols.Printnumber = 0
+    Setcontrols.PrintLine = 26
+    Setcontrols.FirstPrintLine = 26
+    
+'Reads Advection control
+    icounter = 0
+    Success = False
+    Setcontrols.Advection = False
+    
+    Do While keyword <> "Advection:" And icounter < 20
+      icounter = icounter + 1
+      keyword = ActiveSheet.Cells(icounter, 1)
+      If keyword = "Advection:" Then
+         auxstring = ActiveSheet.Cells(icounter, 2)
+         If (auxstring = "yes" Or auxstring = "Yes" Or auxstring = "YES") Then
+            Setcontrols.Advection = True
+         Else
+            Setcontrols.Advection = False
+         End If
+       End If
+    Loop
+    
+    If Setcontrols.Advection Then
+
+      icounter = 0
+      Success = False
+      Setcontrols.QUICK_UP = False
+      Do While keyword <> "AdvectionType:" And icounter < 20
+        icounter = icounter + 1
+        keyword = ActiveSheet.Cells(icounter, 1)
+        If keyword = "AdvectionType:" Then
+            auxstring = ActiveSheet.Cells(icounter, 2)
+         If (auxstring = "upwind" Or auxstring = "Upwind" Or auxstring = "UPWIND") Then
+            Setcontrols.AdvType = "upwind"
+          ElseIf (auxstring = "central" Or auxstring = "Central" Or auxstring = "CENTRAL") Then
+            Setcontrols.AdvType = "central"
+         ElseIf (auxstring = "QUICK" Or auxstring = "Quick" Or auxstring = "quick") Then
+            Setcontrols.AdvType = "QUICK"
+         ElseIf (auxstring = "QUICK_UP" Or auxstring = "Quick_up" Or auxstring = "Quick_UP" Or auxstring = "quick_up") Then
+            Setcontrols.AdvType = "QUICK"
+            Setcontrols.QUICK_UP = True
+         Else
+           MsgBox ("Advection Type must be upwind or central, QUICK or QUICK_UP")
+           Stop
+         End If
+       End If
+      Loop
+      
+      If Setcontrols.QUICK_UP Then
+      
+         icounter = 0
+         Success = False
+         
+         Do While keyword <> "QUICK_UP_Ratio:" And icounter < 20
+           icounter = icounter + 1
+           keyword = ActiveSheet.Cells(icounter, 1)
+           If keyword = "QUICK_UP_Ratio:" Then
+            Success = True
+            Setcontrols.QUICK_UP_Ratio = ActiveSheet.Cells(icounter, 2)
+            If Setcontrols.QUICK_UP_Ratio < 2 Or Setcontrols.QUICK_UP_Ratio > 10 Then
+                MsgBox ("QUICK_UP_Ratio value is: " & Setcontrols.QUICK_UP_Ratio & " value in the range 2 to 10 was expected")
+            End If
+           End If ' keyword
+         Loop
+          If Not Success Then
+           MsgBox ("QUICK_UP_Ratio: must be provided for method QUICK_UP")
+           Stop
+         End If
+          
+       End If 'Setcontrols.QUICK_UP
+       
+   End If 'advection
+   
+'Reads Diffusion control
+
+    icounter = 0
+    Success = False
+    Setcontrols.Diffusion = False
+    
+    Do While keyword <> "Diffusion:" And icounter < 20
+      icounter = icounter + 1
+      keyword = ActiveSheet.Cells(icounter, 1)
+      If keyword = "Diffusion:" Then
+         auxstring = ActiveSheet.Cells(icounter, 2)
+         If (auxstring = "yes" Or auxstring = "Yes" Or auxstring = "YES") Then
+            Setcontrols.Diffusion = True
+         Else
+            Setcontrols.Diffusion = False
+         End If
+       End If
+    Loop
+      
+End Function
+Function CreateProperty(name As String, gr As grid, ctrl As Controls) As Property
+    
+    Dim i, icounter, LineNumber, interval As Integer
+    Dim InitType As String
+    Dim AuxCell, Column As Integer
+    Dim DefaultCellValue, AuxValue, AuxConc, X1, X2, X1IM1, X2IM1 As Double
+    Dim CELL_1, CELL_2, CELL_1IM1, CELL_2IM1 As Integer
+    Dim keyword, auxtext As String
+    Dim Success As Boolean
+    
+    ReDim CreateProperty.NewValue(gr.NC)
+    ReDim CreateProperty.Old(gr.NC)
+    
+    If name = "BOD" Then
+        ReDim CreateProperty.IntegratedAerobicResp(gr.NC)
+        ReDim CreateProperty.IntegratedAnaerobicResp(gr.NC)
+        For i = 1 To gr.NC
+            CreateProperty.IntegratedAerobicResp(i) = 0
+            CreateProperty.IntegratedAnaerobicResp(i) = 0
+        Next i
+    End If
+
+    
+    Worksheets(name).Activate
+    'CreateProperty.RatioToPlot = 1 ' Must be initialised like this because it is used to scale printed values
+    CreateProperty.SheetName = name
+    CreateProperty.name = name
+    
+icounter = 0
+Success = False
+  Do While keyword <> "PropertyName:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "PropertyName:" Then
+    
+        CreateProperty.name = ActiveSheet.Cells(icounter, 2)
+        Success = True
+    End If
+   Loop
+   
+icounter = 0
+Success = False
+CreateProperty.Active = False
+  Do While keyword <> "PropertyActive:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "PropertyActive:" Then
+        auxtext = ActiveSheet.Cells(icounter, 2)
+        Success = True
+        If ((auxtext = "YES") Or (auxtext = "Yes") Or (auxtext = "yes") Or (auxtext = "Y") Or (auxtext = "y")) Then
+           CreateProperty.Active = True
+        Else
+           Exit Function
+      End If
+    End If
+   Loop
+
+
+icounter = 0
+Success = False
+CreateProperty.units = ""
+
+Do While keyword <> "PropertyUnits:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "PropertyUnits:" Then
+        CreateProperty.units = ActiveSheet.Cells(icounter, 2)
+        Success = True
+    End If
+Loop
+
+icounter = 0
+Success = False
+  Do While keyword <> "DefaultValue:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "DefaultValue:" Then
+        CreateProperty.Default = ActiveSheet.Cells(icounter, 2)
+        Success = True
+    End If
+  Loop
+  
+If (Not Success) Then
+     MsgBox ("Default Value for generic (DecayType) Property not found")
+End If
+
+icounter = 0
+Success = False
+  Do While keyword <> "MaximumValue:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "MaximumValue:" Then
+       CreateProperty.maximum = ActiveSheet.Cells(icounter, 2)
+       Success = True
+    End If
+  Loop
+
+If (Success) Then
+        CreateProperty.MaximumActive = True
+    Else
+        CreateProperty.MaximumActive = False
+End If
+
+icounter = 0
+Success = False
+  Do While keyword <> "MinimumValue:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "MinimumValue:" Then
+        CreateProperty.minimum = ActiveSheet.Cells(icounter, 2)
+        Success = True
+    End If
+   Loop
+
+If (Success) Then
+        CreateProperty.MinimumActive = True
+    Else
+        CreateProperty.MinimumActive = False
+End If
+
+icounter = 0
+CreateProperty.Boundary.CyclicBoundary = False
+Success = False
+  Do While keyword <> "CyclicBoundary:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "CyclicBoundary:" Then
+        auxtext = ActiveSheet.Cells(icounter, 2)
+        Success = True
+        If ((auxtext = "YES") Or (auxtext = "Yes") Or (auxtext = "yes") Or (auxtext = "Y") Or (auxtext = "y")) Then
+           CreateProperty.Boundary.CyclicBoundary = True
+        End If
+     End If
+   Loop
+
+If (Success) Then
+        CreateProperty.MinimumActive = True
+    Else
+        CreateProperty.MinimumActive = False
+End If
+
+If name = "Generic" Then
+  icounter = 0
+  Success = False
+  CreateProperty.DecayOrGrowth = True
+  CreateProperty.Decayrate = 0
+
+  Do While keyword <> "Decay/Growth_Rate:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "Decay/Growth_Rate:" Then
+        CreateProperty.Decayrate = ActiveSheet.Cells(icounter, 2)
+           auxtext = ActiveSheet.Cells(icounter, 3)
+            If auxtext = "T90(Hours)" Then
+                        CreateProperty.Decayrate = Log(0.1) / (CreateProperty.Decayrate * 3600) '0.1C*0=C0*(e^(-k*T90(Hours)))
+            ElseIf auxtext = "HalfLife(Days)" Then
+                        CreateProperty.Decayrate = Log(0.5) / (CreateProperty.Decayrate * 86400)  '0.5C*0=C0*(e^(-k*THalfLife(Days)))
+            ElseIf auxtext = "TDuplicate(Days)" Then
+                        CreateProperty.Decayrate = Log(2) / (CreateProperty.Decayrate * 86400)  '2C*0=C0*(e^(k*TDuplicate(Days)))
+            ElseIf auxtext = "Day-1" Then
+                        CreateProperty.Decayrate = CreateProperty.Decayrate / 86400  '2C*0=C0*(e^(k*TDuplicate(Days)))
+            ElseIf auxtext = "RT" Then
+                        CreateProperty.Decayrate = (CreateProperty.Decayrate - 1) / 7 / 86400 'assuming that a contaminated with the corona virus needs 7 days to recover)
+            Else
+                       MsgBox "Input error: Decay/GrowthRate units not known"
+                       Stop
+            End If
+        If CreateProperty.Decayrate = 0 Then
+            CreateProperty.DecayOrGrowth = False
+        End If 'CreateProperty.Decayrate
+            Success = True
+     End If ' Keyword
+  Loop
+     If name = "BOD" And Not Success Then
+            MsgBox "Input error: DecayRate for BOD Property must be specified"
+            Stop
+     End If
+End If '"Generic"
+
+If name = "BOD" Then
+
+  Success = False
+  CreateProperty.DecayOrGrowth = True
+  CreateProperty.Decayrate = 0
+  CreateProperty.GrowthRate = 0
+  
+   icounter = 0
+
+  Do While keyword <> "Decay_Rate:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "Decay_Rate:" Then
+        CreateProperty.Decayrate = ActiveSheet.Cells(icounter, 2)
+            CreateProperty.Decayrate = CreateProperty.Decayrate / 86400  'converts Day-1 into seconds -1
+            auxtext = ActiveSheet.Cells(icounter, 3)
+            If auxtext <> "Day-1" Then
+                       MsgBox "Input error: Decay/GrowthRate units must be: Day-1"
+                       Stop
+            End If
+            
+            Success = True
+            
+        If CreateProperty.Decayrate = 0 Then
+            CreateProperty.DecayOrGrowth = False
+        End If 'CreateProperty.Decayrate
+     End If ' Keyword
+  Loop
+     If name = "BOD" And Not Success Then
+            MsgBox "Input error: DecayRate for BOD Property must be specified"
+            Stop
+     End If
+     
+   icounter = 0
+   Success = False
+  Do While keyword <> "MaxValLogisticFormulation:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "MaxValLogisticFormulation:" Then
+        CreateProperty.MaxValLogisticEquation = ActiveSheet.Cells(icounter, 2)
+        Success = True
+     End If ' Keyword
+  Loop
+     If name = "BOD" And Not Success Then
+         CreateProperty.MaxValLogisticEquation = 10000000 ' a number that allows the property to grow to anything
+     End If
+     
+   icounter = 0
+   Success = False
+  Do While keyword <> "GrowthRateLogisticFormulation:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "GrowthRateLogisticFormulation:" Then
+        CreateProperty.GrowthRate = ActiveSheet.Cells(icounter, 2)
+        CreateProperty.GrowthRate = CreateProperty.GrowthRate / 86400  'converts Day-1 into seconds -1
+
+        Success = True
+     End If ' Keyword
+  Loop
+     If name = "BOD" And Not Success Then
+                 MsgBox "Growth Rate for BOD not found. Zero will be used"
+     End If
+
+
+  icounter = 0
+  Success = False
+   CreateProperty.GrazingKsat = 0
+  Do While keyword <> "O2SemiSaturationConc:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "O2SemiSaturationConc:" Then
+        CreateProperty.GrazingKsat = ActiveSheet.Cells(icounter, 2)
+         Success = True
+     End If ' Keyword
+  Loop
+     If Not Success Then
+            MsgBox "O2SemiSaturationConc: not found. Zero will be used."
+     End If
+     
+  icounter = 0
+  Success = False
+   CreateProperty.AnaerobicRespiration = False
+  Do While keyword <> "AnaerobicRespiration:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "AnaerobicRespiration:" Then
+        auxtext = ActiveSheet.Cells(icounter, 2)
+        Success = True
+     End If ' Keyword
+  Loop
+     If Success Then
+         If auxtext = "YES" Or auxtext = "Yes" Or auxtext = "yes" Or auxtext = "Y" Or auxtext = "y" Then
+            CreateProperty.AnaerobicRespiration = True
+         End If
+     Else
+         MsgBox "NoAnaerobicRespiration: keyword not found. Anaerobic Respiration will be considered"
+     End If
+     
+End If '"name=BOD"
+
+
+ icounter = 0
+ Success = False
+ CreateProperty.Boundary.FreeSurfaceFlux = False
+
+  Do While keyword <> "FreeSurfaceFlux:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "FreeSurfaceFlux:" Then
+       Success = True
+       auxtext = ActiveSheet.Cells(icounter, 2)
+       If (auxtext = "yes") Or (auxtext = "YES") Or (auxtext = "Yes") Then
+          CreateProperty.Boundary.FreeSurfaceFlux = True
+       End If
+     End If
+  Loop
+
+    If Not Success And (name = "DO" Or name = "Temperature") Then
+            MsgBox "warning: No Free surface Flux for variable  " & name
+    End If
+
+
+If name = "Temperature" Then
+
+ icounter = 0
+ Success = False
+ CreateProperty.Boundary.FreeSurfaceLatentHeatFlux = True
+
+  Do While keyword <> "FreeSurfaceLatentHeatFlux:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "FreeSurfaceLatentHeatFlux:" Then
+       Success = True
+       auxtext = ActiveSheet.Cells(icounter, 2)
+       If Not ((auxtext = "yes") Or (auxtext = "YES") Or (auxtext = "Yes")) Then
+          CreateProperty.Boundary.FreeSurfaceLatentHeatFlux = False
+       End If
+    End If
+  Loop
+
+ icounter = 0
+ Success = False
+ CreateProperty.Boundary.FreeSurfaceSensibleHeatFlux = True
+
+  Do While keyword <> "FreeSurfaceSensibeHeatFlux:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "FreeSurfaceSensibeHeatFlux:" Then
+       Success = True
+       auxtext = ActiveSheet.Cells(icounter, 2)
+       If Not ((auxtext = "yes") Or (auxtext = "YES") Or (auxtext = "Yes")) Then
+          CreateProperty.Boundary.FreeSurfaceSensibleHeatFlux = False
+       End If
+     End If
+  Loop
+
+ icounter = 0
+ Success = False
+ CreateProperty.Boundary.FreeSurfaceRadiativeHeatFlux = True
+
+  Do While keyword <> "FreeSurfaceRadiativeHeatFlux:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "FreeSurfaceRadiativeHeatFlux:" Then
+       Success = True
+       auxtext = ActiveSheet.Cells(icounter, 2)
+       If Not ((auxtext = "yes") Or (auxtext = "YES") Or (auxtext = "Yes")) Then
+          CreateProperty.Boundary.FreeSurfaceRadiativeHeatFlux = False
+       End If
+     End If
+  Loop
+
+
+End If
+
+    
+ If ctrl.Advection Then 'Specifies left and right boundary values
+ 
+ icounter = 0
+ Success = False
+  Do While keyword <> "LeftBoundaryValue:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "LeftBoundaryValue:" Then
+            CreateProperty.Boundary.LeftValue = ActiveSheet.Cells(icounter, 2)
+            Success = True
+    End If
+  Loop
+
+    If Not Success Then
+            MsgBox "Input error: Left Boundary value for  must be specified, with advection" & name
+            Stop
+    End If
+
+  icounter = 0
+  Success = False
+  Do While keyword <> "RightBoundaryValue:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "RightBoundaryValue:" Then
+            CreateProperty.Boundary.RightValue = ActiveSheet.Cells(icounter, 2)
+            Success = True
+    End If
+  Loop
+  
+    If Not Success Then
+            MsgBox "Input error: Right Boundary value  must be specified, with advection " & name
+            Stop
+    End If
+
+ End If ' advection
+ 
+icounter = 0
+Success = False
+  Do While keyword <> "DefaultCellValue:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "DefaultCellValue:" Then
+        DefaultCellValue = ActiveSheet.Cells(icounter, 2)
+        Success = True
+    End If
+  Loop
+ 
+' Always initializes as  Default or as the DefaultCellValue if specified
+If Success Then
+  For i = 1 To gr.NC
+     CreateProperty.NewValue(i) = DefaultCellValue
+  Next
+Else
+  For i = 1 To gr.NC
+     CreateProperty.NewValue(i) = CreateProperty.Default
+  Next
+End If
+ 
+'Checks if there is another way to initialize
+icounter = 0
+Success = False
+  Do While keyword <> "InitType:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "InitType:" Then
+        InitType = ActiveSheet.Cells(icounter, 2)
+        If Not (InitType = "DEFAULT" Or InitType = "default" Or InitType = "Default" Or InitType = "CELL" Or InitType = "cell" Or InitType = "Cell" Or InitType = "INTERVAL" Or InitType = "interval" Or InitType = "Interval") Then
+            MsgBox "Input error: Invalid initialization method. InitType: must be DEFAULT or CELL or INTERVAL " & name
+            Stop
+        End If
+    End If
+  Loop
+
+    
+
+If (InitType = "INTERVAL" Or InitType = "Interval" Or InitType = "interval") Then  'Specifies specific values in intervals
+     
+     icounter = 0
+     Success = False
+     Do While Not Success And icounter < 50
+        icounter = icounter + 1
+        keyword = ActiveSheet.Cells(icounter, 1)
+        If keyword = "(X1,X2)_intervalValues(m):" Or keyword = "(X1,X2)_intervalValues(CELL):" Then
+            LineNumber = icounter
+            auxtext = ActiveSheet.Cells(icounter + 1, 1)
+             If auxtext = "ValueInInterval:" Then
+                Success = True
+              Else
+                MsgBox "Property " & name & " input error: Line below (X1, X2)_intervalValues(m): must start by keyword ValueInInterval: and include one value per interval below the left interval limit."
+                End
+             End If
+        End If
+      Loop
+      
+      
+If keyword = "(X1,X2)_intervalValues(m):" Then
+       Column = 2
+       X1IM1 = 0
+       X2IM1 = 0
+       interval = 0
+       
+     Do While (X2IM1 < gr.Length) And Not (IsEmpty(ActiveSheet.Cells(LineNumber, Column)) Or IsEmpty(ActiveSheet.Cells(LineNumber, Column + 1)) Or IsEmpty(ActiveSheet.Cells(LineNumber + 1, Column)))
+     
+       interval = interval + 1
+
+       X1 = ActiveSheet.Cells(LineNumber, Column)
+       X2 = ActiveSheet.Cells(LineNumber, Column + 1)
+       AuxValue = ActiveSheet.Cells(LineNumber + 1, Column)
+       AuxCell = 0
+            
+       If (X1 < 0 Or X2 > gr.Length) Then
+            MsgBox "property " & name & " Input error:  Invalid initialization interval values must be between 0 and" & gr.Length
+            Stop
+       ElseIf (X1 < X2IM1 Or X2 < X1) Then
+            MsgBox "property " & name & " Input error: Intervals can't overlap"
+            Stop
+       Else
+            i = (X1 + gr.dx / 2) \ gr.dx
+            AuxCell = i + 1
+            CreateProperty.NewValue(AuxCell) = AuxValue
+            Do While (X1 < X2)
+                CreateProperty.NewValue(AuxCell) = AuxValue
+                AuxCell = AuxCell + 1
+                X1 = X1 + gr.dx
+            Loop
+            X1IM1 = X1
+            X2IM1 = X2
+       End If '(X1 < 0 Or X2 > gr.Length)
+            Column = Column + 2
+   Loop
+   
+       If (interval = 0) Then
+             MsgBox "Input error on Property " & name & ". Invalid initialization per intervals: no interval found!!!, "
+             Stop
+       End If
+       
+ElseIf keyword = "(X1,X2)_intervalValues(CELL):" Then
+       
+       Column = 2
+       CELL_1IM1 = 0
+       CELL_2IM1 = 0
+       interval = 0
+       
+     Do While (CELL_2IM1 < gr.NC) And Not (IsEmpty(ActiveSheet.Cells(LineNumber, Column)) Or IsEmpty(ActiveSheet.Cells(LineNumber, Column + 1)) Or IsEmpty(ActiveSheet.Cells(LineNumber + 1, Column)))
+     
+       interval = interval + 1
+
+       CELL_1 = ActiveSheet.Cells(LineNumber, Column)
+       CELL_2 = ActiveSheet.Cells(LineNumber, Column + 1)
+       AuxValue = ActiveSheet.Cells(LineNumber + 1, Column)
+       AuxCell = 0
+            
+       If (CELL_1 < 1 Or CELL_2 > gr.Length) Then
+            MsgBox "property " & name & " Input error:  Invalid initialization interval values must be between 0 and" & gr.Length
+            Stop
+       ElseIf (CELL_1 < CELL_2IM1 Or CELL_2 < CELL_1) Then
+            MsgBox "property " & name & " Input error: Intervals can't overlap"
+            Stop
+       Else
+            AuxCell = CELL_1
+            CreateProperty.NewValue(AuxCell) = AuxValue
+            Do While (AuxCell <= CELL_2)
+                CreateProperty.NewValue(AuxCell) = AuxValue
+                AuxCell = AuxCell + 1
+            Loop
+            CELL_1IM1 = CELL_1
+            CELL_2IM1 = CELL_2
+       End If '(X1 < 0 Or X2 > gr.Length)
+       
+            Column = Column + 2
+   Loop
+   
+       If (interval = 0) Then
+             MsgBox "Input error on Property " & name & ". Invalid initialization per intervals: no interval found!!!, "
+             Stop
+       End If
+   Else
+             MsgBox "Input error on Property " & name & ". Invalid initialization per intervals: no keyword for interval values found!!!, "
+             Stop
+   
+End If ' keyword = "(X1,X2)_intervalValues(m):"
+
+End If 'InitType = "INTERVAL"
+    
+       
+
+If (InitType = "CELL" Or InitType = "Cell" Or InitType = "cell") Then
+     
+     icounter = 0
+     Success = False
+     Do While keyword <> "CellNumber:" And icounter < 50
+        icounter = icounter + 1
+        keyword = ActiveSheet.Cells(icounter, 1)
+        If keyword = "CellNumber:" Then
+            LineNumber = icounter
+            Success = True
+        End If
+      Loop
+
+     If Success Then
+       AuxCell = ActiveSheet.Cells(LineNumber, 2)
+            
+       If (AuxCell < 1 Or AuxCell > gr.NC) Then
+            MsgBox "Input error: Invalid initialization cell value mut be between 1 and" & gr.NC & " in " & name
+            End
+       Else
+            CreateProperty.NewValue(AuxCell) = ActiveSheet.Cells(LineNumber + 1, 2)
+            Column = 3
+       End If
+     Else
+            MsgBox "Input error: method CELL selected, but Keyword CellNumber: to read value not specified:  " & name
+            End
+     End If
+     
+     Do While (Not IsEmpty(ActiveSheet.Cells(LineNumber, Column)))
+            AuxCell = ActiveSheet.Cells(LineNumber, Column)
+          If (AuxCell < 1 Or AuxCell > gr.NC) Then
+                MsgBox "Input error: Invalid initialization cell value mut be between 1 and" & gr.NC & name
+                End
+          Else
+            CreateProperty.NewValue(AuxCell) = ActiveSheet.Cells(LineNumber + 1, Column)
+            Column = Column + 1
+          End If
+
+      Loop
+      
+   End If 'InitType = "CELL"
+   
+     CreateProperty.Boundary.PropDischarges = CreatePropDischarges(name, gr)
+    
+End Function
+
+Function CreateFlow(gr As grid, ctrl As Controls) As Flow_properties
+
+    Dim i, icounter, LineNumber As Integer
+    Dim AuxCell, Column As Integer
+    Dim AuxValue As Double
+    Dim keyword, auxtext As String
+    Dim Success As Boolean
+
+    Worksheets("River").Activate
+ 
+ icounter = 0
+ Success = False
+  Do While keyword <> "FlowVelocity:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "FlowVelocity:" Then
+            CreateFlow.velocity = ActiveSheet.Cells(icounter, 2)
+            Success = True
+    End If
+  Loop
+
+    If Not Success Then
+            MsgBox "Input error: Velocity value for  must be specified in worksheet Flow"
+            Stop
+    End If
+        
+ icounter = 0
+ Success = False
+  Do While keyword <> "Diffusivity:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "Diffusivity:" Then
+        auxtext = ActiveSheet.Cells(icounter, 2)
+        If auxtext = "standard" Or auxtext = "Standard" Or auxtext = "std" Or auxtext = "STANDARD" Then
+            CreateFlow.Diffusivity = 0.1 * Abs(CreateFlow.velocity) * gr.RiverWidth
+            MsgBox "Diffusivity value to be used is " & CreateFlow.Diffusivity & " m2/s"
+        Else
+            CreateFlow.Diffusivity = ActiveSheet.Cells(icounter, 2)
+        End If
+        
+            Success = True
+    End If
+  Loop
+
+    If Not Success Then
+            MsgBox "Input error: Diffusivity value for  must be specified in worksheet Flow"
+            Stop
+    End If
+    
+ icounter = 0
+ Success = False
+  Do While keyword <> "RiverSlope:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "RiverSlope:" Then
+            CreateFlow.Riverslope = ActiveSheet.Cells(icounter, 2) / 100 ' reads as percentage
+            Success = True
+    End If
+  Loop
+
+    If Not Success Then
+            MsgBox "Input error: RiverSlope value for  must be specified in worksheet Flow"
+            Stop
+    End If
+    
+    
+    If ctrl.Advection Then
+        CreateFlow.CourantNr = ctrl.dt * CreateFlow.velocity / (gr.dx)
+    Else
+        CreateFlow.CourantNr = 0#
+    End If
+    
+    If ctrl.Diffusion Then
+        CreateFlow.DiffusionNr = ctrl.dt * CreateFlow.Diffusivity / (gr.dx) ^ 2
+    Else
+        CreateFlow.DiffusionNr = 0#
+    End If
+     
+    ActiveSheet.Cells(2, 6) = "Courant Number"
+    ActiveSheet.Cells(2, 8) = Round(CreateFlow.CourantNr, 2)
+    ActiveSheet.Cells(3, 6) = "Diffusion Number"
+    ActiveSheet.Cells(3, 8) = Round(CreateFlow.DiffusionNr, 2)
+    ActiveSheet.Cells(4, 6) = "Grid Reynolds Number"
+    If CreateFlow.DiffusionNr > 0 Then
+         ActiveSheet.Cells(4, 8) = Round(CreateFlow.CourantNr / CreateFlow.DiffusionNr, 2)
+      Else
+         ActiveSheet.Cells(4, 8) = "infinity"
+    End If
+    ActiveSheet.Cells(7, 6) = "Residence Time in the river (Days)"
+    ActiveSheet.Cells(7, 8) = Round(gr.Length / (CreateFlow.velocity + 0.000001) / 3600 / 24, 1)
+    ActiveSheet.Cells(8, 6) = "Residence Time in a Cell (Seconds)"
+    ActiveSheet.Cells(8, 8) = Round(gr.dx / (CreateFlow.velocity + 0.000001), 2)
+    
+    
+     
+End Function
+Function CreateAtmosphere(pr As PropertiesList) As Atmosphere
+
+    Dim i, kk, icounter, LineNumber, LineHenryFirstValue, NumberOfGas, num, inputcolumn As Integer
+    Dim AuxCell, Column As Integer
+    Dim AuxValue As Double
+    Dim keyword, auxtext As String
+    Dim Success As Boolean
+
+    Dim aux(3, 100) As Double
+    Dim Label(100) As String
+    
+    Dim PartialPressureO2, PartialPressureCO2 As Double
+    Dim orderO2, orderCO2 As Integer
+    Dim O2, CO2 As Boolean
+    Dim N_HenryValuesTemp, N_HenryValuesO2, N_HenryValuesCO2 As Integer
+    
+    
+    NumberOfGas = 0
+
+    Worksheets("Atmosphere").Activate
+    
+
+    
+ icounter = 0
+ Success = False
+  Do While keyword <> "AirTemperature:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "AirTemperature:" Then
+            CreateAtmosphere.Temperature = ActiveSheet.Cells(icounter, 2)
+            Success = True
+    End If
+  Loop
+
+    If Not Success Then
+            MsgBox "Input error: AirTemperature value for  must be specified in worksheet Atmosphere"
+            Stop
+    End If
+        
+    
+ icounter = 0
+ Success = False
+  Do While keyword <> "WindSpeed:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "WindSpeed:" Then
+            CreateAtmosphere.windspeed = ActiveSheet.Cells(icounter, 2)
+            Success = True
+    End If
+  Loop
+
+    If Not Success Then
+            MsgBox "Input error: WindSpeed value for  must be specified in worksheet Atmosphere"
+            Stop
+    End If
+                
+ icounter = 0
+ Success = False
+  Do While keyword <> "h_min:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "h_min:" Then
+            CreateAtmosphere.h_min = ActiveSheet.Cells(icounter, 2)
+            Success = True
+    End If
+  Loop
+
+    If Not Success Then
+            CreateAtmosphere.h_min = 6.9
+    End If
+                
+    
+ icounter = 0
+ Success = False
+  Do While keyword <> "AirHumidity:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "AirHumidity:" Then
+            CreateAtmosphere.Humidity = ActiveSheet.Cells(icounter, 2) / 100 ' reads the percentage
+            Success = True
+    End If
+  Loop
+
+    If Not Success Then
+            MsgBox "Input error: Humidity value for  must be specified in worksheet Atmosphere"
+            Stop
+    End If
+ 
+ icounter = 0
+ Success = False
+  Do While keyword <> "SolarConstant:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "SolarConstant:" Then
+            CreateAtmosphere.SolarConstant = ActiveSheet.Cells(icounter, 2)
+            Success = True
+    End If
+  Loop
+
+    If Not Success Then
+            MsgBox "Input error: SolarConstant value for  must be specified in worksheet Atmosphere"
+            Stop
+    End If
+                
+                
+ icounter = 0
+ Success = False
+  Do While keyword <> "Latitude:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "Latitude:" Then
+            CreateAtmosphere.Latitude = ActiveSheet.Cells(icounter, 2)
+            Success = True
+    End If
+  Loop
+
+    If Not Success Then
+            MsgBox "Input error: Latitude value for  must be specified in worksheet Atmosphere"
+            Stop
+    End If
+                               
+ icounter = 0
+ Success = False
+ CreateAtmosphere.SkyTemperatureImposed = False
+  Do While keyword <> "SkyTemperature:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "SkyTemperature:" Then
+            CreateAtmosphere.SkyTemperature = ActiveSheet.Cells(icounter, 2)
+            CreateAtmosphere.SkyTemperatureImposed = True
+            Success = True
+    End If
+  Loop
+
+    If Not Success Then
+            MsgBox "SkyTemperature not Found. Swinbank (1963) formula will be used"
+    End If
+                 
+ icounter = 0
+ Success = False
+  Do While keyword <> "CloudCover:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "CloudCover:" Then
+            CreateAtmosphere.CloudCover = ActiveSheet.Cells(icounter, 2) / 100 ' reads the percentage
+            Success = True
+    End If
+  Loop
+
+    If Not Success Then
+            MsgBox "Input error: CloudCover value for  must be specified in worksheet Atmosphere"
+            Stop
+    End If
+    
+ icounter = 0
+ Success = False
+  Do While keyword <> "SunRizeHour:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "SunRizeHour:" Then
+            CreateAtmosphere.Tsr = ActiveSheet.Cells(icounter, 2)
+            Success = True
+    End If
+  Loop
+
+    If Not Success Then
+            MsgBox "Input error: SunRizeHour value for  must be specified in worksheet Atmosphere"
+            Stop
+    End If
+    
+ icounter = 0
+ Success = False
+  Do While keyword <> "SunSetHour:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "SunSetHour:" Then
+            CreateAtmosphere.Tss = ActiveSheet.Cells(icounter, 2)
+            Success = True
+    End If
+  Loop
+
+    If Not Success Then
+            MsgBox "Input error: SunSetHour value for  must be specified in worksheet Atmosphere"
+            Stop
+    End If
+    
+    
+    
+ icounter = 0
+ Success = False
+ O2 = False
+  Do While keyword <> "O2PartialPressure:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "O2PartialPressure:" Then
+            O2 = True
+            PartialPressureO2 = ActiveSheet.Cells(icounter, 2)
+            NumberOfGas = NumberOfGas + 1
+    End If
+  Loop
+     
+ icounter = 0
+ Success = False
+  Do While keyword <> "CO2PartialPressure:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "CO2PartialPressure:" Then
+            CO2 = True
+            PartialPressureCO2 = ActiveSheet.Cells(icounter, 2)
+            NumberOfGas = NumberOfGas + 1
+    End If
+  Loop
+
+If NumberOfGas = 0 Then
+    Exit Function
+Else
+    ReDim CreateAtmosphere.Gas(NumberOfGas)
+    num = 0
+    If O2 Then
+      num = num + 1
+      CreateAtmosphere.Gas(num).Label = "O2"
+      CreateAtmosphere.Gas(num).partialpressure = PartialPressureO2
+    End If
+    
+    If CO2 Then
+      num = num + 1
+      CreateAtmosphere.Gas(num).Label = "CO2"
+      CreateAtmosphere.Gas(num).partialpressure = PartialPressureCO2
+    End If
+    
+End If
+
+ icounter = 0
+ Success = False
+  Do While keyword <> "HenryConstants:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "HenryConstants:" Then
+        LineHenryFirstValue = icounter + 1
+        Success = True
+    End If
+  Loop
+
+    If Not Success Then
+            MsgBox "Input error: HenryConstants values for " & NumberOfGas & "must be specified in worksheet Atmosphere"
+            Stop
+    Else
+        num = 0
+        inputcolumn = 2
+        Do While (Not IsEmpty(ActiveSheet.Cells(LineHenryFirstValue - 1, inputcolumn)))
+          num = num + 1
+          Label(num) = ActiveSheet.Cells(LineHenryFirstValue - 1, inputcolumn)
+          inputcolumn = inputcolumn + 1
+      Loop
+        If (Label(num) = "Units" Or Label(num) = "units" Or Label(num) = "UNITS") Then
+          num = num - 1
+        End If
+        
+        If num < NumberOfGas + 1 Then
+            MsgBox "Input error: in the line with keyword HenryConstants column labels Temperature followed by one per gas, must appear: " & NumberOfGas
+            Stop
+        End If
+    End If ' success
+    
+        
+    If (Label(1) <> "Temperature" And Label(1) <> "temperature" And Label(1) <> "TEMPERATURE") Then
+            MsgBox "Input error: Temperature must be provided in column 2 in the line of keyword HenryConstants"
+            Stop
+    End If
+    
+    num = 0
+    For i = 1 To NumberOfGas
+        If Label(i + 1) = "O2" Then
+          orderO2 = i
+        ElseIf Label(i + 1) = "CO2" Then
+          orderCO2 = i
+        End If
+    Next i
+        
+        num = 0
+        Do While Not IsEmpty(ActiveSheet.Cells(LineHenryFirstValue + num, 2))
+             aux(1, 1 + num) = ActiveSheet.Cells(LineHenryFirstValue + num, 2)
+                If aux(1, 1 + num) < 0 Then
+                   MsgBox "Temperature for Henryconstants can not be negative: Value number " & i & " is incorrect"
+                   Stop
+                End If
+              num = num + 1
+         Loop
+         N_HenryValuesTemp = num
+               
+        num = 0
+        Do While Not IsEmpty(ActiveSheet.Cells(LineHenryFirstValue + num, 2 + orderO2))
+             aux(2, 1 + num) = ActiveSheet.Cells(LineHenryFirstValue + num, 2 + orderO2)
+                If aux(2, 1 + num) <= 0 Then
+                   MsgBox "Henry Constant for Oxygen: Value number " & i & " is incorrect"
+                   Stop
+                End If
+             num = num + 1
+         Loop
+         N_HenryValuesO2 = num
+         
+                
+        num = 0
+        Do While Not IsEmpty(ActiveSheet.Cells(LineHenryFirstValue + num, 2 + orderCO2))
+             aux(3, 1 + num) = ActiveSheet.Cells(LineHenryFirstValue + num, 2 + orderCO2)
+                If aux(3, 1 + num) <= 0 Then
+                   MsgBox "Henry Constant for Oxygen: Value number " & i & " is incorrect"
+                   Stop
+                End If
+              num = num + 1
+         Loop
+         N_HenryValuesCO2 = num
+        
+         If N_HenryValuesTemp < (N_HenryValuesO2 Or N_HenryValuesCO2) Then
+               MsgBox "Henry Constants error: Number of Temperature lines van not be smaller than the number of O2 and CO2 lines"
+               Stop
+         End If
+              
+CreateAtmosphere.Gas(orderO2).N_HenryConstants = N_HenryValuesO2
+CreateAtmosphere.Gas(orderCO2).N_HenryConstants = N_HenryValuesCO2
+
+ReDim CreateAtmosphere.Gas(orderO2).HenryConstValues(2, N_HenryValuesO2)
+ReDim CreateAtmosphere.Gas(orderCO2).HenryConstValues(2, N_HenryValuesCO2)
+
+   
+    For kk = 1 To 2
+       For i = 1 To CreateAtmosphere.Gas(kk).N_HenryConstants
+            CreateAtmosphere.Gas(kk).HenryConstValues(1, i) = aux(1, i)
+            CreateAtmosphere.Gas(kk).HenryConstValues(2, i) = aux(1 + kk, i)
+       Next i
+    Next kk
+
+If pr.DO.Active Then
+
+ReDim pr.DO.Boundary.ValuesForFreeSurfaceGasExchange.HenryConstValues(2, CreateAtmosphere.Gas(orderO2).N_HenryConstants)
+
+    pr.DO.Boundary.ValuesForFreeSurfaceGasExchange.MolecularWeight = 2 * 16 * 1000 'mg/mole
+    pr.DO.Boundary.ValuesForFreeSurfaceGasExchange.partialpressure = CreateAtmosphere.Gas(orderO2).partialpressure
+    pr.DO.Boundary.ValuesForFreeSurfaceGasExchange.N_HenryConstants = CreateAtmosphere.Gas(orderO2).N_HenryConstants
+    For i = 1 To CreateAtmosphere.Gas(orderO2).N_HenryConstants
+       pr.DO.Boundary.ValuesForFreeSurfaceGasExchange.HenryConstValues(1, i) = CreateAtmosphere.Gas(orderO2).HenryConstValues(1, i)
+       pr.DO.Boundary.ValuesForFreeSurfaceGasExchange.HenryConstValues(2, i) = CreateAtmosphere.Gas(orderO2).HenryConstValues(2, i)
+    Next i
+End If
+
+If pr.CO2.Active Then
+
+ReDim pr.CO2.Boundary.ValuesForFreeSurfaceGasExchange.HenryConstValues(2, CreateAtmosphere.Gas(orderCO2).N_HenryConstants)
+
+    pr.CO2.Boundary.ValuesForFreeSurfaceGasExchange.MolecularWeight = 44000 'mg/mole (C=12, O2=2*16
+    pr.CO2.Boundary.ValuesForFreeSurfaceGasExchange.partialpressure = CreateAtmosphere.Gas(orderCO2).partialpressure
+    pr.CO2.Boundary.ValuesForFreeSurfaceGasExchange.N_HenryConstants = CreateAtmosphere.Gas(orderCO2).N_HenryConstants
+    For i = 1 To CreateAtmosphere.Gas(orderCO2).N_HenryConstants
+       pr.CO2.Boundary.ValuesForFreeSurfaceGasExchange.HenryConstValues(1, i) = CreateAtmosphere.Gas(orderCO2).HenryConstValues(1, i)
+       pr.CO2.Boundary.ValuesForFreeSurfaceGasExchange.HenryConstValues(2, i) = CreateAtmosphere.Gas(orderCO2).HenryConstValues(2, i)
+    Next i
+End If
+
+     
+End Function
+Function CreateCoef(NC As Integer) As Equation_Coef
+
+    ReDim CreateCoef.b_up(NC) As Double
+    ReDim CreateCoef.e_up(NC) As Double
+    ReDim CreateCoef.f_up(NC) As Double
+    
+    ReDim CreateCoef.A(NC) As Double
+    ReDim CreateCoef.B(NC) As Double
+    ReDim CreateCoef.e(NC) As Double
+    ReDim CreateCoef.f(NC) As Double
+    ReDim CreateCoef.g(NC) As Double
+    
+    
+    ReDim CreateCoef.L_LeftCoef(NC) As Double
+    ReDim CreateCoef.LeftCoef(NC) As Double
+    ReDim CreateCoef.CenterCoef(NC) As Double
+    ReDim CreateCoef.RigthCoef(NC) As Double
+    ReDim CreateCoef.R_RigthCoef(NC) As Double
+    ReDim CreateCoef.TiCoef(NC) As Double
+        
+End Function
+
+
+Function CreatePropDischarges(name As String, gr As grid) As DischargesList
+   
+   Dim ND, inputcolumn, num As Integer
+   
+    Dim i, icounter, LineNumber, callcounter As Integer
+    Dim AuxCell, Column As Integer
+    Dim AuxValue As Double
+    Dim keyword, auxtext As String
+    Dim Success As Boolean
+    
+   
+    Worksheets("Discharges").Activate
+    
+ icounter = 0
+ Success = False
+  Do While keyword <> "DischargeNumbers:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "DischargeNumbers:" Then
+            Success = True
+    End If
+  Loop
+  
+  If Not Success Then
+  
+       CreatePropDischarges.NumberOfDischarges = 0
+       CreatePropDischarges.DischargesActive = False
+       MsgBox "Warning: Keyword DischargeNumbers: not found in worksheet Discharge. Simulation will be carried without discharges"
+
+       Exit Function
+
+   Else 'counts the number of discharges and registers their ID numbers
+        ND = 0
+        num = 1
+        inputcolumn = 2
+      Do While (Not IsEmpty(ActiveSheet.Cells(icounter, inputcolumn)) And num > 0)
+          num = ActiveSheet.Cells(icounter, inputcolumn)
+          If (num > 0#) Then
+              ND = ND + 1
+              inputcolumn = inputcolumn + 1
+          End If
+       Loop
+    
+         CreatePropDischarges.NumberOfDischarges = ND
+         If ND > 0 Then
+             ReDim CreatePropDischarges.Discharge(ND)
+         Else
+              CreatePropDischarges.DischargesActive = False
+              MsgBox "Keyword DischargeNumbers: found, but no discharge number found. Simulation will be carried without discharges"
+              Exit Function
+         End If
+    End If 'success
+     
+ icounter = 0
+ Success = False
+  Do While keyword <> "DischargeNames:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "DischargeNames:" Then
+            Success = True
+    End If
+  Loop
+  
+  If Success Then
+           For i = 1 To ND
+            CreatePropDischarges.Discharge(i).name = ActiveSheet.Cells(icounter, i + 1)
+           Next i
+  Else
+            MsgBox "warning: Discharge names not found in worksheet Discharge. Simulation will continue"
+  End If
+  
+  icounter = 0
+  Success = False
+  Do While keyword <> "DischargeCells:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "DischargeCells:" Then
+            Success = True
+    End If
+  Loop
+  
+  If Success Then
+           For i = 1 To ND
+            CreatePropDischarges.Discharge(i).cell = ActiveSheet.Cells(icounter, i + 1)
+               If CreatePropDischarges.Discharge(i).cell > gr.NC Then
+                 MsgBox "warning: At least a Discharge is located at a Cell Number larger than " & gr.NC & " This and subsequent discharges will be ignored"
+                 CreatePropDischarges.NumberOfDischarges = i - 1
+                 Exit For
+               End If
+           Next i
+  Else ' looks for keyword DischargeLocations:
+  
+     icounter = 0
+     Do While keyword <> "DischargeLocations(km):" And icounter < 50
+         icounter = icounter + 1
+         keyword = ActiveSheet.Cells(icounter, 1)
+         If keyword = "DischargeLocations(km):" Then
+            Success = True
+         End If
+      Loop
+
+      If Success Then
+         For i = 1 To ND
+           AuxValue = ActiveSheet.Cells(icounter, i + 1) * 1000 ' converts km into m
+            CreatePropDischarges.Discharge(i).cell = AuxValue / gr.dx
+               If CreatePropDischarges.Discharge(i).cell > gr.NC Then
+                 MsgBox "warning: At least a Discharge is located off the domain. Length: " & gr.Length & " m. This and subsequent discharges will be ignored"
+                 CreatePropDischarges.NumberOfDischarges = i - 1
+                 Exit For
+               End If
+            Next i
+          Else
+            MsgBox "Input error: Keyword DischargeCells: or Keyword DischargeLocations(km): must be specified in worksheet Discharges"
+            End
+       End If 'DischargeLocations
+    End If 'DischargeCells
+  
+  icounter = 0
+  Success = False
+  Do While keyword <> "DischargeFlowRates(m3/s):" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "DischargeFlowRates(m3/s):" Then
+            Success = True
+    End If
+  Loop
+  
+  If Success Then
+           For i = 1 To ND
+            CreatePropDischarges.Discharge(i).VolumeRate = ActiveSheet.Cells(icounter, i + 1)
+           Next i
+  Else
+            MsgBox "Input error: DischargeFlowRates(m3/s): not specified in worksheet Discharge"
+            Stop
+  End If
+  
+  If name = "Temperature" Then
+             auxtext = "DischargeTemperatures:"
+  ElseIf name = "DO" Then
+             auxtext = "DischargeConcentrations_DO:"
+  ElseIf name = "BOD" Then
+             auxtext = "DischargeConcentrations_BOD:"
+  ElseIf name = "CO2" Then
+             auxtext = "DischargeConcentrations_CO2:"
+  ElseIf name = "Generic" Then
+             auxtext = "DischargeGeneric:"
+  Else
+            MsgBox "Input error: Variable " & name & " not known in worksheet Discharge"
+            Stop
+  End If
+  
+  icounter = 0
+  Success = False
+  Do While keyword <> auxtext And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = auxtext Then
+            Success = True
+    End If
+  Loop
+  
+  If Success Then
+  
+           CreatePropDischarges.DischargesActive = True
+           For i = 1 To ND
+            CreatePropDischarges.Discharge(i).SpecificValue = ActiveSheet.Cells(icounter, i + 1)
+            'If Name = "DO" Or Name = "BOD" Or Name = "CO2" Then 'It does not have to convert to mg/m3 because in "ApplyDischarges" the conversion cancels
+              'CreatePropDischarges.Discharge(I).SpecificValue = CreatePropDischarges.Discharge(I).SpecificValue * 1000 ' converts to mg/L into mg/m3
+            'End If
+           Next i
+  Else
+           CreatePropDischarges.DischargesActive = False
+            MsgBox "Warning: Specific values for property " & name & " not specified in worksheet Discharge. Discharges will not be applied"
+            Exit Function
+
+  End If
+  
+
+End Function
+
+Function CreateGrid() As grid
+
+    Dim i, icounter As Integer
+    Dim Success As Boolean
+    Dim keyword As String
+    
+    Worksheets("River").Activate
+    
+' Reads Channel Length
+
+icounter = 0
+Success = False
+
+Do While keyword <> "ChannelLength:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "ChannelLength:" Then
+        CreateGrid.Length = ActiveSheet.Cells(icounter, 2)
+        Success = True
+    End If
+Loop
+
+If (Not Success) Then
+     MsgBox ("ChannelLength: not found in  Worksheet Main")
+     Stop
+End If
+
+' Reads Number of Cells
+icounter = 0
+Success = False
+
+Do While keyword <> "NumberOfCells:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "NumberOfCells:" Then
+        CreateGrid.NC = ActiveSheet.Cells(icounter, 2)
+        Success = True
+    End If
+Loop
+
+If (Not Success) Then
+     MsgBox ("NumberOfCells: not found in  Worksheet Main")
+     Stop
+End If
+
+' Reads Vertical area (cross section area)
+icounter = 0
+Success = False
+
+Do While keyword <> "RiverWidth:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "RiverWidth:" Then
+        CreateGrid.RiverWidth = ActiveSheet.Cells(icounter, 2)
+        Success = True
+    End If
+Loop
+
+If (Not Success) Then
+     MsgBox ("RiverWidth: not found in  Worksheet Main")
+     Stop
+End If
+
+' Reads water depth
+icounter = 0
+Success = False
+
+Do While keyword <> "WaterDepth:" And icounter < 50
+    icounter = icounter + 1
+    keyword = ActiveSheet.Cells(icounter, 1)
+    If keyword = "WaterDepth:" Then
+        CreateGrid.waterdepth = ActiveSheet.Cells(icounter, 2)
+        Success = True
+    End If
+Loop
+
+If (Not Success) Then
+     MsgBox ("WaterDepth: not found in  Worksheet Main")
+     Stop
+End If
+
+
+' Computes dx and Horizontal Area
+    
+    CreateGrid.dx = CreateGrid.Length / CreateGrid.NC
+    CreateGrid.AreaVertical = CreateGrid.waterdepth * CreateGrid.RiverWidth
+    CreateGrid.AreaH = CreateGrid.RiverWidth * CreateGrid.dx
+    
+    ReDim CreateGrid.xc(CreateGrid.NC) As Double
+       
+' Computes cell center coordinate
+    For i = 1 To CreateGrid.NC
+        CreateGrid.xc(i) = CreateGrid.dx * (i - 0.5)
+    Next
+    
+End Function
+
+Sub PrintHeader(ctrl As Controls, gr As grid, name As String)
+        
+    Dim i, Line, Column, FirstLineForHeading  As Integer
+    Dim LastRow As Long, LastColumn As Long
+    
+    FirstLineForHeading = ctrl.FirstPrintLine - 4
+    
+    LastRow = Worksheets(name).Cells(Rows.Count, 1).End(xlUp).Row
+    LastColumn = Worksheets(name).Cells(ctrl.PrintLine, Columns.Count).End(xlToLeft).Column
+    
+    Worksheets(name).Range(Cells(FirstLineForHeading, 1), Cells(LastRow, LastColumn)).ClearContents
+    
+    'For Line = Ctrl.PrintLine - 4 To Ctrl.PrintLine + Ctrl.NumberOfOutputs + 10
+    '    For column = 1 To gr.nc + 1
+    '       Worksheets(Name).(Cells(Line, column).ClearContents
+    '    Next column
+    'Next Line
+
+    Worksheets(name).Cells(FirstLineForHeading, 1) = "Cell Number"
+    Worksheets(name).Cells(FirstLineForHeading + 1, 1) = "Coordinate xc"
+    
+    For i = 1 To gr.NC
+       Worksheets(name).Cells(FirstLineForHeading, 3 + i) = i
+       Worksheets(name).Cells(FirstLineForHeading + 1, 3 + i) = gr.xc(i)
+    Next
+    
+    Worksheets(name).Cells(FirstLineForHeading + 3, 1) = "Time (s)"
+    Worksheets(name).Cells(FirstLineForHeading + 3, 2) = "Time (days)"
+    Worksheets(name).Cells(FirstLineForHeading + 3, 4) = "values"
+    
+End Sub
+Sub PrintValues(pr As Property, gr As grid, ctrl As Controls)
+    
+    Dim i As Integer
+
+    Sheets(pr.SheetName).Select
+    
+    'First print
+    If (ctrl.Printnumber = 0) Then
+    
+        Call PrintHeader(ctrl, gr, pr.SheetName)
+        
+        If pr.name = "BOD" Then
+        
+         Sheets("IntegratedAeroResp(kg)").Select
+         Call PrintHeader(ctrl, gr, "IntegratedAeroResp(kg)")
+         
+         Sheets("IntegratedAnaeroResp(kg)").Select
+         Call PrintHeader(ctrl, gr, "IntegratedAnaeroResp(kg)")
+        End If
+        
+    End If
+    
+    Sheets(pr.SheetName).Select
+  
+    ActiveSheet.Cells(ctrl.PrintLine, 1) = ctrl.T
+    ActiveSheet.Cells(ctrl.PrintLine, 2) = ctrl.T / 86400#
+    
+    'Print conc
+    For i = 1 To gr.NC
+          ActiveSheet.Cells(ctrl.PrintLine, 3 + i) = pr.NewValue(i) '/ pr.RatioToPlot This is not being used. It is important in the ecological model when curves of different properties were overlap
+    Next
+    
+   If pr.name = "BOD" Then
+    
+         Sheets("IntegratedAeroResp(kg)").Select
+    
+         ActiveSheet.Cells(ctrl.PrintLine, 1) = ctrl.T
+         ActiveSheet.Cells(ctrl.PrintLine, 2) = ctrl.T / 86400#
+       
+    'Print values
+        For i = 1 To gr.NC
+          ActiveSheet.Cells(ctrl.PrintLine, 3 + i) = pr.IntegratedAerobicResp(i) '/ pr.RatioToPlot This is not being used. It is important in the ecological model when curves of different properties were overlap
+        Next
+        
+         Sheets("IntegratedAnaeroResp(kg)").Select
+    
+         ActiveSheet.Cells(ctrl.PrintLine, 1) = ctrl.T
+         ActiveSheet.Cells(ctrl.PrintLine, 2) = ctrl.T / 86400#
+       
+    'Print values
+        For i = 1 To gr.NC
+          ActiveSheet.Cells(ctrl.PrintLine, 3 + i) = pr.IntegratedAnaerobicResp(i) '/ pr.RatioToPlot This is not being used. It is important in the ecological model when curves of different properties were overlap
+        Next
+    
+    
+   End If ' BOD
+   
+End Sub
+
+
+Sub UpdatePrinting(ctrl As Controls)
+
+    ctrl.Printnumber = ctrl.Printnumber + 1
+    ctrl.printtime = ctrl.printtime + ctrl.DtPrint
+    ctrl.PrintLine = ctrl.PrintLine + 1
+
+End Sub
+
+Sub CreateGraphs(pr As PropertiesList, ctrl As Controls, NC As Integer)
+
+    Dim LastRow As Long, LastColumn As Long, LineToGraph As Long, PercentageSimulation As Long
+    Dim NumOfTimeSeries As Integer, cell As Integer
+    Dim i As Integer
+    Dim NumberOfSpaceProfiles As Integer
+    Dim NumberOfLines As Long
+    Dim SeriesNumber As Integer
+    Dim ws As Worksheet
+    Dim RngX As Range, RngY As Range
+    Dim PositionInSheetLeft As Double
+    Dim PositionInSheetTop As Double
+    Dim ChartObj As ChartObject
+    
+    
+    Worksheets("Graph").Activate
+    For Each ChartObj In Worksheets("Graph").ChartObjects
+        ChartObj.Delete
+    Next
+        
+'outside any numbers or formats
+    Worksheets("Graph").Range("A10").Select
+        
+'Timeseries Type Graphs (Counts the number of cells were time series are performed)
+    NumOfTimeSeries = Worksheets("Graph").Cells(2, Columns.Count).End(xlToLeft).Column - 2  'substracts 2 because cells start are provided starting at column 3
+'Grid graphs (counts the number of longitudinal profiles desired)
+    NumberOfSpaceProfiles = Worksheets("Graph").Cells(3, Columns.Count).End(xlToLeft).Column - 2 ' idem
+    
+    If NumOfTimeSeries > 0 Then
+    
+            For i = 1 To NumOfTimeSeries
+            If (Worksheets("Graph").Cells(2, i + 2) < 0 Or Worksheets("Graph").Cells(2, i + 2) > NC) Then
+                MsgBox "Cell number for graph is out of boundaries: " & Worksheets("Graph").Cells(2, i + 2)
+                NumOfTimeSeries = i - 1
+                Exit For
+            End If
+            Next i
+            
+        
+        PositionInSheetLeft = 100
+        PositionInSheetTop = 100
+        
+        Call CreateOverlapGraphsTime(pr, NumOfTimeSeries, ctrl, NC, PositionInSheetTop, PositionInSheetLeft) 'Plots all cells in the same graph
+
+    End If
+    
+    
+    
+'space graphs
+    If NumberOfSpaceProfiles > 0 Then
+    
+        For i = 1 To NumberOfSpaceProfiles
+            If (Worksheets("Graph").Cells(3, i + 2) < 0 Or Worksheets("Graph").Cells(3, i + 2) > 100) Then
+                MsgBox "Time Percentage for graph has to be between 0 and 100: " & Worksheets("Graph").Cells(3, i + 2)
+                End
+            End If
+        Next i
+        
+            Call CreateOverlapGraphsSpace(pr, NumberOfSpaceProfiles, ctrl, NC, PositionInSheetTop, PositionInSheetLeft)
+
+     End If
+           
+
+    If NumOfTimeSeries > 0 Then
+
+        For i = 1 To NumOfTimeSeries ' Plots one graph per cell
+               Call CreatePropertiesGraphsTime(pr, i, ctrl, PositionInSheetLeft, PositionInSheetTop)
+            PositionInSheetTop = PositionInSheetTop + 350
+            PositionInSheetLeft = 100
+        Next
+        
+    End If
+    
+    If NumberOfSpaceProfiles > 0 Then
+            
+        For i = 1 To NumberOfSpaceProfiles
+
+            NumberOfLines = ctrl.PrintLine - ctrl.FirstPrintLine - 1
+            PercentageSimulation = CInt(Worksheets("Graph").Cells(3, i + 2))
+  'what line to graph as a percentage of total lines
+            LineToGraph = ctrl.FirstPrintLine + PercentageSimulation / 100 * NumberOfLines
+               Call CreatePropertiesGraphsSpace(pr, LineToGraph, ctrl, PositionInSheetLeft, PositionInSheetTop, NC)
+            PositionInSheetTop = PositionInSheetTop + 350
+            PositionInSheetLeft = 100
+        Next i
+    
+    End If
+End Sub
+Sub CreateOverlapGraphsSpace(pr As PropertiesList, NumberOfSpaceProfiles As Integer, ctrl As Controls, NC As Integer, PositionInSheetTop As Double, PositionInSheetLeft As Double)
+    Dim LastRow As Long, LastColumn As Long
+    Dim SeriesNumber As Integer, cell As Integer, i As Integer
+    Dim ws As Worksheet
+    Dim RngX As Range, RngY As Range
+    'Dim PositionInSheet As Double
+    Dim ymin, ymax, aux, PercentageSimulation As Double
+    Dim iaux, LineToGraph, FirstLineToPlot, LastLineToPlot, Nplots As Integer
+    
+    Dim Legend, name As String
+    
+    For Each ws In ActiveWorkbook.Worksheets
+        LastColumn = 4 + NC
+   
+        If (ws.name = "Phyto" Or _
+            ws.name = "Zoo" Or _
+            ws.name = "Detritus" Or _
+            ws.name = "Nutrient" Or _
+            (ws.name = "Temperature" And pr.Temperature.Active) Or _
+            (ws.name = "DO" And pr.DO.Active) Or _
+            (ws.name = "CO2" And pr.DO.Active) Or _
+            (ws.name = "BOD" And pr.BOD.Active) Or _
+            (ws.name = "IntegratedAeroResp(kg)" And pr.BOD.Active) Or _
+            (ws.name = "IntegratedAnaeroResp(kg)" And pr.BOD.Active) Or _
+            (ws.name = "Generic" And pr.Generic.Active)) Then
+            
+            name = ws.name
+    
+        FirstLineToPlot = ctrl.FirstPrintLine + CInt(Worksheets("Graph").Cells(3, 3)) / 100 * (ctrl.PrintLine - ctrl.FirstPrintLine - 1)
+        LastLineToPlot = ctrl.FirstPrintLine + CInt(Worksheets("Graph").Cells(3, 3 + NumberOfSpaceProfiles - 1)) / 100 * (ctrl.PrintLine - ctrl.FirstPrintLine - 1)
+   
+     Charts.Add
+     With ActiveChart
+        Do Until .SeriesCollection.Count = 0
+            .SeriesCollection(1).Delete
+        Loop
+     End With
+     
+     ActiveChart.ChartType = xlXYScatterLines
+     ActiveChart.Location where:=xlLocationAsObject, name:="Graph"
+     
+     
+     Set RngX = Range(Worksheets(name).Cells(ctrl.FirstPrintLine - 3, 4), Worksheets(name).Cells(ctrl.FirstPrintLine - 3, LastColumn))
+     Set RngY = Range(Worksheets(name).Cells(FirstLineToPlot, 4), Worksheets(name).Cells(LastLineToPlot, LastColumn))
+     
+     ymin = Application.WorksheetFunction.Min(Range(Worksheets(name).Cells(FirstLineToPlot, 4), Worksheets(name).Cells(LastLineToPlot, LastColumn)))
+     If ymin > 0 Then
+        ymin = 0.9 * Round(ymin / 10, 2) * 10
+     Else
+        ymin = 1.1 * Round(ymin / 10, 2) * 10
+     End If
+     
+     ymax = Application.WorksheetFunction.Max(Range(Worksheets(name).Cells(FirstLineToPlot, 4), Worksheets(name).Cells(LastLineToPlot, LastColumn)))
+     If ymax > 0 Then
+        ymax = 1.1 * Round(ymax / 10, 2) * 10
+     Else
+        ymax = 0.9 * Round(ymin / 10, 2) * 10
+     End If
+     
+     
+     For i = 1 To NumberOfSpaceProfiles
+     
+         LineToGraph = ctrl.FirstPrintLine + CInt(Worksheets("Graph").Cells(3, 2 + i)) / 100 * (ctrl.PrintLine - ctrl.FirstPrintLine - 1)
+         Set RngY = Range(Worksheets(name).Cells(LineToGraph, 4), Worksheets(name).Cells(LineToGraph, LastColumn))
+     
+     With ActiveChart
+         .SeriesCollection.NewSeries
+         .SeriesCollection(i).XValues = RngX
+         .SeriesCollection(i).Values = RngY
+         .SeriesCollection(i).name = " @Time " & Round(Worksheets(name).Cells(LineToGraph, 2), 2) & " Days"
+         .Axes(xlValue).MinimumScale = ymin
+         .Axes(xlValue).MaximumScale = ymax
+         
+         
+         .HasTitle = True
+         .ChartTitle.Characters.Text = name & " vs Distance "
+         .Axes(xlCategory, xlPrimary).HasTitle = True
+         .Axes(xlCategory, xlPrimary).AxisTitle.Characters.Text = "Distance to origin (m)"
+         .Axes(xlValue, xlPrimary).HasTitle = True
+         .Axes(xlValue, xlPrimary).AxisTitle.Characters.Text = name
+         .Axes(xlValue, xlPrimary).TickLabels.NumberFormat = "#####.00"
+         
+     End With
+
+     Next i
+
+          Call FormatPropertiesGraphs(PositionInSheetLeft, PositionInSheetTop, name, NumberOfSpaceProfiles)
+          PositionInSheetLeft = PositionInSheetLeft + 550
+
+    End If
+Next
+          PositionInSheetLeft = 100
+          PositionInSheetTop = PositionInSheetTop + 350
+End Sub
+Sub CreateOverlapGraphsTime(pr As PropertiesList, NumOfTimeSeries As Integer, ctrl As Controls, NC As Integer, PositionInSheetTop As Double, PositionInSheetLeft As Double)
+    Dim LastRow As Long, FirstColumn, LastColumn, Column  As Long
+    Dim i, SeriesNumber As Integer, cell As Integer
+    Dim ws As Worksheet
+    Dim RngX As Range, RngY As Range
+    Dim ymin, ymax As Double
+    Dim Legend, name As String
+    
+    For Each ws In ActiveWorkbook.Worksheets
+        LastColumn = 4 + NC
+   
+        If (ws.name = "Phyto" Or _
+            ws.name = "Zoo" Or _
+            ws.name = "Detritus" Or _
+            ws.name = "Nutrient" Or _
+            (ws.name = "Temperature" And pr.Temperature.Active) Or _
+            (ws.name = "DO" And pr.DO.Active) Or _
+            (ws.name = "CO2" And pr.DO.Active) Or _
+            (ws.name = "BOD" And pr.BOD.Active) Or _
+            (ws.name = "IntegratedAeroResp(kg)" And pr.BOD.Active) Or _
+            (ws.name = "IntegratedAnaeroResp(kg)" And pr.BOD.Active) Or _
+            (ws.name = "Generic" And pr.Generic.Active)) Then
+            
+            name = ws.name
+    
+        FirstColumn = Worksheets("Graph").Cells(2, 3)
+        LastColumn = Worksheets("Graph").Cells(2, 3 + NumOfTimeSeries - 1)
+     
+     Charts.Add
+     With ActiveChart
+        Do Until .SeriesCollection.Count = 0
+            .SeriesCollection(1).Delete
+        Loop
+     End With
+     ActiveChart.ChartType = xlXYScatterLines
+     ActiveChart.Location where:=xlLocationAsObject, name:="Graph"
+     SeriesNumber = 1
+     LastRow = ctrl.PrintLine - 1
+     
+     Set RngX = Range(Worksheets(name).Cells(ctrl.FirstPrintLine, 2), Worksheets(name).Cells(LastRow, 2))
+     Set RngY = Range(Worksheets(name).Cells(ctrl.FirstPrintLine, 3 + FirstColumn), Worksheets(name).Cells(LastRow, 3 + LastColumn))
+     
+     ymin = Application.WorksheetFunction.Min(Range(Worksheets(name).Cells(ctrl.FirstPrintLine, 3 + FirstColumn), Worksheets(name).Cells(LastRow, 3 + LastColumn)))
+     If ymin > 0 Then
+        ymin = 0.9 * Round(ymin / 10, 2) * 10
+     Else
+        ymin = 1.1 * Round(ymin / 10, 2) * 10
+     End If
+     
+     ymax = Application.WorksheetFunction.Max(Range(Worksheets(name).Cells(ctrl.FirstPrintLine, 3 + FirstColumn), Worksheets(name).Cells(LastRow, 3 + LastColumn)))
+     If ymax > 0 Then
+        ymax = 1.1 * Round(ymax / 10, 2) * 10
+     Else
+        ymax = 0.9 * Round(ymin / 10, 2) * 10
+     End If
+     
+     
+     For i = 1 To NumOfTimeSeries
+     
+     cell = Worksheets("Graph").Cells(2, 2 + i)
+     
+     Set RngY = Range(Worksheets(name).Cells(ctrl.FirstPrintLine, 3 + cell), Worksheets(name).Cells(LastRow, 3 + cell))
+     
+     With ActiveChart
+         .SeriesCollection.NewSeries
+         .SeriesCollection(i).XValues = RngX
+         .SeriesCollection(i).Values = RngY
+         .SeriesCollection(i).name = " @Cell " & cell
+         .Axes(xlValue).MinimumScale = ymin
+         .Axes(xlValue).MaximumScale = ymax
+        ' .SeriesCollection(SeriesNumber).name = name
+
+         
+         .HasTitle = True
+         .ChartTitle.Characters.Text = name & " vs time in cell "
+         .Axes(xlCategory, xlPrimary).HasTitle = True
+         .Axes(xlCategory, xlPrimary).AxisTitle.Characters.Text = "Days"
+         .Axes(xlValue, xlPrimary).HasTitle = True
+         .Axes(xlValue, xlPrimary).AxisTitle.Characters.Text = name
+         .Axes(xlValue, xlPrimary).TickLabels.NumberFormat = "#####.00"
+         
+     End With
+     
+     Next i
+         
+          Call FormatPropertiesGraphs(PositionInSheetLeft, PositionInSheetTop, name, NumOfTimeSeries)
+          PositionInSheetLeft = PositionInSheetLeft + 550
+
+
+  End If
+Next
+      
+          PositionInSheetLeft = 100
+          PositionInSheetTop = PositionInSheetTop + 350
+
+End Sub
+Sub CreatePropertiesGraphsTime(pr As PropertiesList, i As Integer, ctrl As Controls, PositionInSheetLeft As Double, PositionInSheetTop As Double)
+    Dim LastRow As Long, LastColumn As Long
+    Dim SeriesNumber As Integer, cell As Integer
+    Dim ws As Worksheet
+    Dim RngX As Range, RngY As Range
+    Dim name As String
+    Dim ymin, ymax, dy As Double
+
+    'Biology charts in time
+    For Each ws In ActiveWorkbook.Worksheets
+    
+        If (ws.name = "Phyto" Or _
+            ws.name = "Zoo" Or _
+            ws.name = "Detritus" Or _
+            ws.name = "Nutrient" Or _
+            (ws.name = "Temperature" And pr.Temperature.Active) Or _
+            (ws.name = "DO" And pr.DO.Active) Or _
+            (ws.name = "CO2" And pr.DO.Active) Or _
+            (ws.name = "BOD" And pr.BOD.Active) Or _
+            (ws.name = "IntegratedAeroResp(kg)" And pr.BOD.Active) Or _
+            (ws.name = "IntegratedAnaeroResp(kg)" And pr.BOD.Active) Or _
+            (ws.name = "Generic" And pr.Generic.Active)) Then
+        
+            name = ws.name
+            Charts.Add
+            With ActiveChart
+                Do Until .SeriesCollection.Count = 0
+                    .SeriesCollection(1).Delete
+                Loop
+            End With
+            
+            ActiveChart.ChartType = xlXYScatterSmooth 'xlXYScatterLines
+            ActiveChart.Location where:=xlLocationAsObject, name:="Graph"
+            SeriesNumber = 1
+            LastRow = ctrl.PrintLine - 1
+            
+            cell = Worksheets("Graph").Cells(2, 2 + i)
+            
+            Set RngX = Range(Worksheets(ws.name).Cells(ctrl.FirstPrintLine, 2), Worksheets(ws.name).Cells(LastRow, 2))
+            Set RngY = Range(Worksheets(ws.name).Cells(ctrl.FirstPrintLine, 3 + cell), Worksheets(ws.name).Cells(LastRow, 3 + cell))
+     
+     ymin = Application.WorksheetFunction.Min(Range(Worksheets(name).Cells(ctrl.FirstPrintLine, 3 + cell), Worksheets(name).Cells(LastRow, 3 + cell)))
+     ymax = Application.WorksheetFunction.Max(Range(Worksheets(name).Cells(ctrl.FirstPrintLine, 3 + cell), Worksheets(name).Cells(LastRow, 3 + cell)))
+'     dy = (ymax - ymin) / 100
+'     ymin = Round((ymin - dy) / 10, 0) * 10
+'     ymax = Round((ymax + dy) / 10, 0) * 10
+     If ymin > 0 Then
+        ymin = 0.9 * Round(ymin / 10, 1) * 10
+     Else
+        ymin = 1.1 * Round(ymin / 10, 1) * 10
+     End If
+     
+     If ymax > 0 Then
+        ymax = 1.1 * Round(ymax / 10, 1) * 10
+     Else
+        ymax = 0.9 * Round(ymin / 10, 1) * 10
+     End If
+            
+            
+            With ActiveChart
+                .SeriesCollection.NewSeries
+                .SeriesCollection(SeriesNumber).XValues = RngX
+                .SeriesCollection(SeriesNumber).Values = RngY
+                .SeriesCollection(SeriesNumber).name = ws.name
+                 
+       '         .Axes(xlValue).MinimumScale = ymin
+       '         .Axes(xlValue).MaximumScale = ymax
+
+               
+                .HasTitle = True
+                .ChartTitle.Characters.Text = "Time Series at Cell " & cell
+                .Axes(xlCategory, xlPrimary).HasTitle = True
+                .Axes(xlCategory, xlPrimary).AxisTitle.Characters.Text = "Days"
+                .Axes(xlValue, xlPrimary).HasTitle = True
+                .Axes(xlValue, xlPrimary).AxisTitle.Characters.Text = name
+            End With
+            
+            Call FormatPropertiesGraphs(PositionInSheetLeft, PositionInSheetTop, name, 1)
+            
+            PositionInSheetLeft = PositionInSheetLeft + 550
+        End If
+        
+    Next
+
+End Sub
+
+Sub CreatePropertiesGraphsSpace(pr As PropertiesList, Line As Long, ctrl As Controls, PositionInSheetLeft As Double, PositionInSheetTop As Double, NC As Integer)
+    Dim LastRow As Long, LastColumn As Long
+    Dim SeriesNumber As Integer, cell As Integer, i As Integer
+    Dim ws As Worksheet
+    Dim RngX As Range, RngY As Range
+    Dim name As String
+    Dim ymin, ymax, dy As Double
+    'Dim PositionInSheet As Double
+
+    'Biology charts in time
+    'PositionInSheet = 100
+
+      
+    For Each ws In ActiveWorkbook.Worksheets
+        LastColumn = 4 + NC
+   
+        If (ws.name = "Phyto" Or _
+            ws.name = "Zoo" Or _
+            ws.name = "Detritus" Or _
+            ws.name = "Nutrient" Or _
+            (ws.name = "Temperature" And pr.Temperature.Active) Or _
+            (ws.name = "DO" And pr.DO.Active) Or _
+            (ws.name = "CO2" And pr.DO.Active) Or _
+            (ws.name = "BOD" And pr.BOD.Active) Or _
+            (ws.name = "IntegratedAeroResp(kg)" And pr.BOD.Active) Or _
+            (ws.name = "IntegratedAnaeroResp(kg)" And pr.BOD.Active) Or _
+            (ws.name = "Generic" And pr.Generic.Active)) Then
+            
+            name = ws.name
+            Charts.Add
+            With ActiveChart
+                Do Until .SeriesCollection.Count = 0
+                    .SeriesCollection(1).Delete
+                Loop
+            End With
+            ActiveChart.ChartType = xlXYScatterSmooth 'xlXYScatterLinesNoMarkers 'xlLineMarkers
+            ActiveChart.Location where:=xlLocationAsObject, name:="Graph"
+            SeriesNumber = 1
+            
+            LastRow = ctrl.PrintLine - 1
+            
+            Set RngX = Range(Worksheets(ws.name).Cells(ctrl.FirstPrintLine - 3, 4), Worksheets(ws.name).Cells(ctrl.FirstPrintLine - 3, LastColumn))
+            Set RngY = Range(Worksheets(ws.name).Cells(Line, 4), Worksheets(ws.name).Cells(Line, LastColumn))
+            
+     ymin = Application.WorksheetFunction.Min(Range(Worksheets(name).Cells(ctrl.FirstPrintLine, 3 + cell), Worksheets(name).Cells(LastRow, 3 + cell)))
+     ymax = Application.WorksheetFunction.Max(Range(Worksheets(name).Cells(ctrl.FirstPrintLine, 3 + cell), Worksheets(name).Cells(LastRow, 3 + cell)))
+'     dy = (ymax - ymin) / 100
+'     ymin = Round((ymin - dy) / 10, 0) * 10
+'     ymax = Round((ymax + dy) / 10, 0) * 10
+            
+     If ymin > 0 Then
+        ymin = 0.9 * Round(ymin / 10, 1) * 10
+     Else
+        ymin = 1.1 * Round(ymin / 10, 1) * 10
+     End If
+     
+     If ymax > 0 Then
+        ymax = 1.1 * Round(ymax / 10, 1) * 10
+     Else
+        ymax = 0.9 * Round(ymin / 10, 1) * 10
+     End If
+           
+            
+            With ActiveChart
+                .SeriesCollection.NewSeries
+                .SeriesCollection(SeriesNumber).XValues = RngX
+                .SeriesCollection(SeriesNumber).Values = RngY
+                .SeriesCollection(SeriesNumber).name = ws.name
+                
+          '      .Axes(xlValue).MinimumScale = ymin
+           '     .Axes(xlValue).MaximumScale = ymax
+
+                
+                .HasTitle = True
+                .ChartTitle.Characters.Text = "Longitudinal Profile " & Round(Worksheets(ws.name).Cells(Line, 2), 2) & " days after start"
+                .Axes(xlCategory, xlPrimary).HasTitle = True
+                .Axes(xlCategory, xlPrimary).AxisTitle.Characters.Text = "Distance to origin (m)"
+                .Axes(xlValue, xlPrimary).HasTitle = True
+                .Axes(xlValue, xlPrimary).AxisTitle.Characters.Text = name
+            End With
+            
+          Call FormatPropertiesGraphs(PositionInSheetLeft, PositionInSheetTop, name, 1)
+            
+            PositionInSheetLeft = PositionInSheetLeft + 550
+
+        End If
+    Next
+
+        
+End Sub
+
+
+Sub FormatPropertiesGraphs(PositionInSheetLeft As Double, PositionInSheetTop As Double, name As String, nseries As Integer)
+    Dim Color As Double
+    Dim i As Integer
+    Dim Str As String
+    
+    Color = 33
+
+    If (name = "Temperature") Then
+        Color = 41
+    End If
+    If (name = "Zoo") Then
+        Color = 3
+    End If
+
+    If (name = "Detritus") Then
+        Color = 52
+    End If
+
+    If (name = "Nutrient") Then
+        Color = 44
+    End If
+    
+    If (name = "Phyto") Then
+        Color = 50
+    End If
+    
+    If (name = "DO") Then
+        Color = 45
+    End If
+    
+    If (name = "CO2") Then
+        Color = 55
+    End If
+
+    If (name = "BOD") Then
+        Color = 3
+    End If
+
+    If (name = "Generic") Then
+       Color = 41
+    End If
+
+    With ActiveChart.Parent
+        .Height = 325 ' resize
+        .Width = 500  ' resize
+        .Top = PositionInSheetTop    ' reposition
+        .Left = PositionInSheetLeft   ' reposition
+    End With
+    
+'For i = 1 To nseries
+    'ActiveChart.SeriesCollection(1).Select
+    ActiveChart.SeriesCollection(nseries).Select
+    
+    With Selection
+        .Border.LineStyle = xlContinuous
+        .Border.Color = Color
+        .MarkerBackgroundColorIndex = Color
+        .MarkerForegroundColorIndex = Color
+'        .MarkerSize = 3
+        
+    End With
+'Next i
+    'color stuff
+    With Selection.Border
+        .Weight = 2
+        .ColorIndex = Color
+        .LineStyle = 1
+    End With
+    
+    Selection.Interior.ColorIndex = xlAutomatic
+    ActiveChart.PlotArea.Select
+    With Selection.Border
+'        .ColorIndex = Color
+        .Weight = xlThin
+        .LineStyle = xlContinuous
+    End With
+    
+    Selection.Interior.ColorIndex = xlNone
+    Str = Worksheets("Graph").Cells(4, 1)
+    
+    If Str = "NoMajorGridlines:" Then
+       ActiveChart.Axes(xlValue).MajorGridlines.Select   'These instruction selects the "major Grid Lines inside the graph
+       Selection.Delete                                  'and this instruction deletes them
+    End If
+    
+'    ActiveChart.Legend.Select
+'    ActiveChart.Legend.LegendEntries(2).LegendKey.Select
+'    With Selection.Border
+'        .ColorIndex = 43
+'        .Weight = xlThin
+'        .LineStyle = xlContinuous
+'    End With
+'    With Selection
+'        .MarkerBackgroundColorIndex = 43
+'        .MarkerForegroundColorIndex = 43
+'        .MarkerStyle = xlSquare
+'        .Smooth = False
+'        .MarkerSize = 5
+'        .Shadow = False
+'    End With
+'    ActiveChart.Legend.LegendEntries(4).LegendKey.Select
+'    With Selection.Border
+'        .ColorIndex = 45
+'        .Weight = xlThin
+'        .LineStyle = xlContinuous
+'    End With
+'    With Selection
+'        .MarkerBackgroundColorIndex = 45
+'        .MarkerForegroundColorIndex = 45
+'        .MarkerStyle = xlX
+'        .Smooth = False
+'        .MarkerSize = 5
+'        .Shadow = False
+'    End With
+'    With Selection.Border
+'        .ColorIndex = 45
+'        .Weight = xlThin
+'        .LineStyle = xlContinuous
+'    End With
+'    With Selection
+'        .MarkerBackgroundColorIndex = 45
+'        .MarkerForegroundColorIndex = 45
+'        .MarkerStyle = xlDiamond
+'        .Smooth = False
+'        .MarkerSize = 5
+'        .Shadow = False
+'    End With
+    
+End Sub
+
+
+
+

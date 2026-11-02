@@ -1,0 +1,2585 @@
+{
+  "case": "stress_exp_quick",
+  "source_sha256": "b63ffec3779e251267bac4dc243d656775c060d4b7bb6eb94ba2edc816dd39fd",
+  "excel_pid": 21248,
+  "workbook_name": "Channel_TempOD&BOD&CO2AdvectionSourceCode2025_V3.xlsm",
+  "edits": {
+    "Main": {
+      "B3": 0.005,
+      "B4": 60,
+      "B5": 120,
+      "B6": "exp",
+      "B7": "yes",
+      "B10": "yes",
+      "B8": "QUICK",
+      "B9": 4
+    },
+    "River": {
+      "B3": 20
+    },
+    "Graph": {
+      "C2": 1,
+      "D2": 5,
+      "E2": 10,
+      "F2": null,
+      "G2": null
+    },
+    "Temperature": {
+      "B20": 5,
+      "C20": 10
+    }
+  },
+  "config": {
+    "main": {
+      "simulation_duration_days": 0.005,
+      "time_step_seconds": 60,
+      "print_interval_seconds": 120,
+      "time_method": "exp",
+      "advection": true,
+      "advection_type": "QUICK",
+      "quick_up_ratio": 4,
+      "quick_up_ratio_label_present": true,
+      "diffusion": true
+    },
+    "river": {
+      "length_m": 10000,
+      "cells": 20,
+      "width_m": 5,
+      "depth_m": 0.5,
+      "slope_percent": 0.0001,
+      "manning_coefficient": 0.025,
+      "flow_rate_m3_s": 0.05,
+      "velocity_m_s": 0.02,
+      "diffusivity_m2_s": 4,
+      "velocity_mode": "flow_formula"
+    },
+    "atmosphere": {
+      "air_temperature_c": 20,
+      "wind_speed_m_s": 0,
+      "minimum_heat_transfer_coefficient": 6.9,
+      "h_min_label_present": true,
+      "humidity_percent": 80,
+      "solar_constant_w_m2": 1370,
+      "latitude_degrees": 38,
+      "sky_temperature_c": -40,
+      "sky_temperature_imposed": true,
+      "cloud_cover_percent": 0,
+      "sunrise_hour": 6,
+      "sunset_hour": 18,
+      "o2_partial_pressure_bar": 0.2095,
+      "co2_partial_pressure_bar": 0.00039528301886792444,
+      "o2_pressure_label_present": true,
+      "co2_pressure_label_present": true,
+      "henry_constants": [
+        {
+          "temperature_c": 0,
+          "o2": 0.0021812,
+          "co2": 0.076425
+        },
+        {
+          "temperature_c": 5,
+          "o2": 0.0019126,
+          "co2": 0.063532
+        },
+        {
+          "temperature_c": 10,
+          "o2": 0.0016963,
+          "co2": 0.05327
+        },
+        {
+          "temperature_c": 15,
+          "o2": 0.0015236,
+          "co2": 0.045463
+        },
+        {
+          "temperature_c": 20,
+          "o2": 0.001384,
+          "co2": 0.039172
+        },
+        {
+          "temperature_c": 25,
+          "o2": 0.001263,
+          "co2": 0.033363
+        }
+      ],
+      "henry_header_order": [
+        "O2",
+        "CO2"
+      ],
+      "co2_pressure_mode": "o2_formula"
+    },
+    "discharges": [
+      {
+        "id": 1,
+        "name": "Descarga 1",
+        "cell": 10,
+        "location_km": null,
+        "flow_rate_m3_s": 0,
+        "Temperature": 0,
+        "DO": 0,
+        "BOD": 0,
+        "CO2": 0,
+        "Generic": 0
+      },
+      {
+        "id": 2,
+        "name": "Descarga2",
+        "cell": 10,
+        "location_km": null,
+        "flow_rate_m3_s": 0,
+        "Temperature": 0,
+        "DO": 0,
+        "BOD": 0,
+        "CO2": 0,
+        "Generic": 0
+      },
+      {
+        "id": 3,
+        "name": "Descarga3",
+        "cell": 10,
+        "location_km": null,
+        "flow_rate_m3_s": 0,
+        "Temperature": 50,
+        "DO": 0,
+        "BOD": 200,
+        "CO2": 1,
+        "Generic": 100000
+      },
+      {
+        "id": 4,
+        "name": "Descarga4",
+        "cell": 10,
+        "location_km": null,
+        "flow_rate_m3_s": 0,
+        "Temperature": 50,
+        "DO": 0,
+        "BOD": 200,
+        "CO2": 1,
+        "Generic": 100000
+      }
+    ],
+    "discharge_cells_label_present": true,
+    "discharge_property_labels_present": {
+      "Temperature": true,
+      "DO": true,
+      "BOD": true,
+      "CO2": true,
+      "Generic": true
+    },
+    "properties": {
+      "Generic": {
+        "name_cell": "E.coli",
+        "name_label_matches_vba": false,
+        "units": "UFC/100ml",
+        "active": true,
+        "active_label_present": true,
+        "default": 1,
+        "maximum": 100000000000,
+        "maximum_label_present": true,
+        "minimum": 0,
+        "minimum_label_present": true,
+        "cyclic": false,
+        "cyclic_label_present": false,
+        "left_boundary": 20,
+        "right_boundary": 0,
+        "free_surface_flux": false,
+        "sensible_heat": true,
+        "latent_heat": true,
+        "radiative_heat": true,
+        "anaerobic_respiration": false,
+        "bod_oxygen_half_saturation": 0,
+        "bod_logistic_max": 10000000,
+        "bod_logistic_max_label_present": false,
+        "bod_growth_per_day": 0,
+        "bod_decay_per_day": 0,
+        "bod_decay_label_present": false,
+        "generic_rate": 10,
+        "generic_rate_label_present": true,
+        "generic_rate_units": "T90(Hours)",
+        "initial": {
+          "type": "DEFAULT",
+          "default_cell_value": 1,
+          "default_cell_label_present": true,
+          "cells": [
+            {
+              "cell": 242,
+              "value": 16000
+            },
+            {
+              "cell": 243,
+              "value": 16000
+            },
+            {
+              "cell": 244,
+              "value": 16000
+            },
+            {
+              "cell": 245,
+              "value": 16000
+            },
+            {
+              "cell": 246,
+              "value": 16000
+            },
+            {
+              "cell": 247,
+              "value": 16000
+            },
+            {
+              "cell": 248,
+              "value": 16000
+            },
+            {
+              "cell": 249,
+              "value": 16000
+            },
+            {
+              "cell": 250,
+              "value": 16000
+            },
+            {
+              "cell": 251,
+              "value": 16000
+            },
+            {
+              "cell": 252,
+              "value": 16000
+            },
+            {
+              "cell": 253,
+              "value": 16000
+            },
+            {
+              "cell": 254,
+              "value": 16000
+            },
+            {
+              "cell": 255,
+              "value": 16000
+            },
+            {
+              "cell": 256,
+              "value": 16000
+            },
+            {
+              "cell": 257,
+              "value": 16000
+            },
+            {
+              "cell": 258,
+              "value": 16000
+            }
+          ],
+          "interval_kind": "CELL",
+          "intervals": []
+        }
+      },
+      "Temperature": {
+        "name_cell": "Temperature",
+        "name_label_matches_vba": false,
+        "units": "ºC",
+        "active": true,
+        "active_label_present": true,
+        "default": 20,
+        "maximum": 45,
+        "maximum_label_present": true,
+        "minimum": 0,
+        "minimum_label_present": true,
+        "cyclic": true,
+        "cyclic_label_present": true,
+        "left_boundary": 15,
+        "right_boundary": 20,
+        "free_surface_flux": true,
+        "sensible_heat": true,
+        "latent_heat": true,
+        "radiative_heat": true,
+        "anaerobic_respiration": false,
+        "bod_oxygen_half_saturation": 0,
+        "bod_logistic_max": 10000000,
+        "bod_logistic_max_label_present": false,
+        "bod_growth_per_day": 0,
+        "bod_decay_per_day": 0,
+        "bod_decay_label_present": false,
+        "generic_rate": 0,
+        "generic_rate_label_present": false,
+        "generic_rate_units": "T90(Hours)",
+        "initial": {
+          "type": "INTERVAL",
+          "default_cell_value": 20,
+          "default_cell_label_present": true,
+          "cells": [
+            {
+              "cell": 4,
+              "value": 1
+            }
+          ],
+          "interval_kind": "CELL",
+          "intervals": [
+            {
+              "start": 5,
+              "end": 10,
+              "value": 9
+            }
+          ]
+        }
+      },
+      "DO": {
+        "name_cell": "DO",
+        "name_label_matches_vba": false,
+        "units": "mg/L",
+        "active": false,
+        "active_label_present": true,
+        "default": 0,
+        "maximum": 18,
+        "maximum_label_present": true,
+        "minimum": 0,
+        "minimum_label_present": true,
+        "cyclic": false,
+        "cyclic_label_present": false,
+        "left_boundary": 8,
+        "right_boundary": 0,
+        "free_surface_flux": false,
+        "sensible_heat": true,
+        "latent_heat": true,
+        "radiative_heat": true,
+        "anaerobic_respiration": false,
+        "bod_oxygen_half_saturation": 0,
+        "bod_logistic_max": 10000000,
+        "bod_logistic_max_label_present": false,
+        "bod_growth_per_day": 0,
+        "bod_decay_per_day": 0,
+        "bod_decay_label_present": false,
+        "generic_rate": 0,
+        "generic_rate_label_present": false,
+        "generic_rate_units": "T90(Hours)",
+        "initial": {
+          "type": "DEFAULT",
+          "default_cell_value": 10,
+          "default_cell_label_present": true,
+          "cells": [
+            {
+              "cell": 4,
+              "value": 1
+            }
+          ],
+          "interval_kind": "CELL",
+          "intervals": [
+            {
+              "start": 10,
+              "end": 20,
+              "value": 3
+            },
+            {
+              "start": 40,
+              "end": 50,
+              "value": 6
+            },
+            {
+              "start": 60,
+              "end": 70,
+              "value": 9
+            }
+          ]
+        }
+      },
+      "BOD": {
+        "name_cell": "BOD",
+        "name_label_matches_vba": false,
+        "units": "mg/L",
+        "active": false,
+        "active_label_present": true,
+        "default": 5,
+        "maximum": 400,
+        "maximum_label_present": true,
+        "minimum": 0,
+        "minimum_label_present": true,
+        "cyclic": false,
+        "cyclic_label_present": false,
+        "left_boundary": 8,
+        "right_boundary": 0,
+        "free_surface_flux": false,
+        "sensible_heat": true,
+        "latent_heat": true,
+        "radiative_heat": true,
+        "anaerobic_respiration": false,
+        "bod_oxygen_half_saturation": 1,
+        "bod_logistic_max": 12,
+        "bod_logistic_max_label_present": true,
+        "bod_growth_per_day": 0.5,
+        "bod_decay_per_day": 0.2,
+        "bod_decay_label_present": true,
+        "generic_rate": 0,
+        "generic_rate_label_present": false,
+        "generic_rate_units": "T90(Hours)",
+        "initial": {
+          "type": "DEFAULT",
+          "default_cell_value": 8,
+          "default_cell_label_present": true,
+          "cells": [
+            {
+              "cell": 4,
+              "value": 1
+            }
+          ],
+          "interval_kind": "CELL",
+          "intervals": [
+            {
+              "start": 10,
+              "end": 20,
+              "value": 100
+            },
+            {
+              "start": 40,
+              "end": 50,
+              "value": 200
+            },
+            {
+              "start": 60,
+              "end": 70,
+              "value": 300
+            }
+          ]
+        }
+      },
+      "CO2": {
+        "name_cell": "CO2",
+        "name_label_matches_vba": false,
+        "units": "mg/L",
+        "active": false,
+        "active_label_present": true,
+        "default": 0.7,
+        "maximum": 18,
+        "maximum_label_present": true,
+        "minimum": 0,
+        "minimum_label_present": true,
+        "cyclic": false,
+        "cyclic_label_present": false,
+        "left_boundary": 1,
+        "right_boundary": 0,
+        "free_surface_flux": false,
+        "sensible_heat": true,
+        "latent_heat": true,
+        "radiative_heat": true,
+        "anaerobic_respiration": false,
+        "bod_oxygen_half_saturation": 0,
+        "bod_logistic_max": 10000000,
+        "bod_logistic_max_label_present": false,
+        "bod_growth_per_day": 0,
+        "bod_decay_per_day": 0,
+        "bod_decay_label_present": false,
+        "generic_rate": 0,
+        "generic_rate_label_present": false,
+        "generic_rate_units": "T90(Hours)",
+        "initial": {
+          "type": "DEFAULT",
+          "default_cell_value": 1,
+          "default_cell_label_present": true,
+          "cells": [
+            {
+              "cell": 4,
+              "value": 33
+            }
+          ],
+          "interval_kind": "CELL",
+          "intervals": [
+            {
+              "start": 10,
+              "end": 20,
+              "value": 0
+            },
+            {
+              "start": 40,
+              "end": 50,
+              "value": 0.5
+            },
+            {
+              "start": 60,
+              "end": 70,
+              "value": 0.3
+            }
+          ]
+        }
+      }
+    },
+    "graph": {
+      "time_series_cells": [
+        1,
+        5,
+        10
+      ],
+      "longitudinal_profiles_percent": [
+        0,
+        15,
+        45,
+        60,
+        80,
+        100
+      ],
+      "no_major_gridlines": false,
+      "sheet_order": [
+        "Main",
+        "River",
+        "Atmosphere",
+        "Discharges",
+        "Temperature",
+        "DO",
+        "CO2",
+        "BOD",
+        "Generic",
+        "Graph",
+        "IntegratedAeroResp(kg)",
+        "IntegratedAnaeroResp(kg)",
+        "Sheet1",
+        "Sheet2"
+      ]
+    }
+  },
+  "effective_inputs": {
+    "river_velocity": 0.02,
+    "co2_partial_pressure": 0.00039528301886792444
+  },
+  "active_properties": [
+    "Temperature",
+    "Generic"
+  ],
+  "outputs": {
+    "Temperature": {
+      "address": "A22:W30",
+      "width": 23,
+      "height": 9,
+      "headers": {
+        "cell_numbers": [
+          "Cell Number",
+          null,
+          null,
+          1.0,
+          2.0,
+          3.0,
+          4.0,
+          5.0,
+          6.0,
+          7.0,
+          8.0,
+          9.0,
+          10.0,
+          11.0,
+          12.0,
+          13.0,
+          14.0,
+          15.0,
+          16.0,
+          17.0,
+          18.0,
+          19.0,
+          20.0
+        ],
+        "coordinates": [
+          "Coordinate xc",
+          null,
+          null,
+          250.0,
+          750.0,
+          1250.0,
+          1750.0,
+          2250.0,
+          2750.0,
+          3250.0,
+          3750.0,
+          4250.0,
+          4750.0,
+          5250.0,
+          5750.0,
+          6250.0,
+          6750.0,
+          7250.0,
+          7750.0,
+          8250.0,
+          8750.0,
+          9250.0,
+          9750.0
+        ],
+        "labels": [
+          "Time (s)",
+          "Time (days)",
+          null,
+          "values",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "data": [
+        [
+          0.0,
+          0.0,
+          null,
+          20.0,
+          20.0,
+          20.0,
+          20.0,
+          9.0,
+          9.0,
+          9.0,
+          9.0,
+          9.0,
+          9.0,
+          20.0,
+          20.0,
+          20.0,
+          20.0,
+          20.0,
+          20.0,
+          20.0,
+          20.0,
+          20.0,
+          20.0
+        ],
+        [
+          120.0,
+          0.001388888888888889,
+          null,
+          19.984163083958656,
+          19.984163083958656,
+          19.984163044403676,
+          19.982848124405052,
+          9.05261800243562,
+          8.985526889608273,
+          8.992001543775693,
+          8.992021729086984,
+          8.99202077918997,
+          8.993336299572212,
+          19.923593397757745,
+          19.990653987750466,
+          19.98418226812531,
+          19.98416209508422,
+          19.984163083958656,
+          19.984163083958656,
+          19.984163083958656,
+          19.984163083958656,
+          19.984163083958656,
+          19.984163083958656
+        ],
+        [
+          240.0,
+          0.002777777777777778,
+          null,
+          19.96834416870334,
+          19.96834416869388,
+          19.96834393293561,
+          19.965731323107065,
+          9.104814990931853,
+          8.971473011067047,
+          8.983932166235906,
+          8.98405126832293,
+          8.984045972777853,
+          8.986660537599123,
+          19.847666217917595,
+          19.980907461773363,
+          19.968457589814726,
+          19.968338608049674,
+          19.968344134040983,
+          19.968344169833404,
+          19.968344168706878,
+          19.96834416870325,
+          19.96834416870334,
+          19.96834416870334
+        ],
+        [
+          360.0,
+          0.004166666666666667,
+          null,
+          19.952543225165243,
+          19.952543225118266,
+          19.952542639625047,
+          19.948649396696574,
+          9.156593803502854,
+          8.9578331850781,
+          8.975795109699954,
+          8.976087891369266,
+          8.976075640524776,
+          8.979972868038253,
+          19.77221489973762,
+          19.970766067373805,
+          19.95282260569115,
+          19.952530236900696,
+          19.952543056229345,
+          19.952543230268972,
+          19.952543225216427,
+          19.95254322516407,
+          19.952543225165233,
+          19.952543225165243
+        ],
+        [
+          480.0,
+          0.005555555555555556,
+          null,
+          19.936760224343697,
+          19.936760224213057,
+          19.93675913852773,
+          19.931602147379195,
+          9.207957259058277,
+          8.94460228210381,
+          8.967593563168357,
+          8.968130899187711,
+          8.968109835513543,
+          8.973273444258355,
+          19.697235912424734,
+          19.960235389086815,
+          19.937274015829725,
+          19.93673765114944,
+          19.936759763393873,
+          19.936760237149656,
+          19.93676022457397,
+          19.93676022433899,
+          19.93676022434363,
+          19.936760224343704
+        ]
+      ]
+    },
+    "Generic": {
+      "address": "A22:W30",
+      "width": 23,
+      "height": 9,
+      "headers": {
+        "cell_numbers": [
+          "Cell Number",
+          null,
+          null,
+          1.0,
+          2.0,
+          3.0,
+          4.0,
+          5.0,
+          6.0,
+          7.0,
+          8.0,
+          9.0,
+          10.0,
+          11.0,
+          12.0,
+          13.0,
+          14.0,
+          15.0,
+          16.0,
+          17.0,
+          18.0,
+          19.0,
+          20.0
+        ],
+        "coordinates": [
+          "Coordinate xc",
+          null,
+          null,
+          250.0,
+          750.0,
+          1250.0,
+          1750.0,
+          2250.0,
+          2750.0,
+          3250.0,
+          3750.0,
+          4250.0,
+          4750.0,
+          5250.0,
+          5750.0,
+          6250.0,
+          6750.0,
+          7250.0,
+          7750.0,
+          8250.0,
+          8750.0,
+          9250.0,
+          9750.0
+        ],
+        "labels": [
+          "Time (s)",
+          "Time (days)",
+          null,
+          "values",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "data": [
+        [
+          0.0,
+          0.0,
+          null,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        [
+          120.0,
+          0.001388888888888889,
+          null,
+          1.0942190654269826,
+          0.9811755630310073,
+          0.9923068633628173,
+          0.9923411407518868,
+          0.9923394438514379,
+          0.9923394438514379,
+          0.9923394438514379,
+          0.9923394438514379,
+          0.9923394438514379,
+          0.9923394438514379,
+          0.9923394438514379,
+          0.9923394438514379,
+          0.9923394438514379,
+          0.9923394438514379,
+          0.9923394438514379,
+          0.9923394438514379,
+          0.9923394438514379,
+          0.9923394438514379,
+          0.9923394438514379,
+          0.9923394438514379
+        ],
+        [
+          240.0,
+          0.002777777777777778,
+          null,
+          1.1871987493346723,
+          0.9631702245773839,
+          0.9845456780002964,
+          0.9847470854396552,
+          0.9847376305796319,
+          0.9847375698939639,
+          0.9847375718173795,
+          0.9847375718235326,
+          0.9847375718233811,
+          0.9847375718233812,
+          0.9847375718233811,
+          0.9847375718233811,
+          0.9847375718233811,
+          0.9847375718233811,
+          0.9847375718233811,
+          0.9847375718233811,
+          0.9847375718233811,
+          0.9847375718233811,
+          0.9847375718233811,
+          0.9847375718233811
+        ],
+        [
+          360.0,
+          0.004166666666666667,
+          null,
+          1.2789554227238318,
+          0.9459656183578349,
+          0.9767230379732367,
+          0.9772160938954636,
+          0.9771942194796854,
+          0.977193925678157,
+          0.9771939342764124,
+          0.9771939343648127,
+          0.9771939343628424,
+          0.977193934362829,
+          0.9771939343628293,
+          0.9771939343628293,
+          0.9771939343628293,
+          0.9771939343628293,
+          0.9771939343628293,
+          0.9771939343628293,
+          0.9771939343628293,
+          0.9771939343628293,
+          0.9771939343628293,
+          0.9771939343628293
+        ],
+        [
+          480.0,
+          0.005555555555555556,
+          null,
+          1.3695052394543878,
+          0.9295437213559983,
+          0.9688453289770405,
+          0.9697464996040294,
+          0.9697088599497653,
+          0.9697080636358129,
+          0.9697080849736818,
+          0.9697080853685774,
+          0.9697080853607252,
+          0.9697080853606063,
+          0.9697080853606084,
+          0.9697080853606085,
+          0.9697080853606085,
+          0.9697080853606085,
+          0.9697080853606085,
+          0.9697080853606085,
+          0.9697080853606085,
+          0.9697080853606085,
+          0.9697080853606085,
+          0.9697080853606085
+        ]
+      ]
+    }
+  },
+  "river_diagnostics": [
+    [
+      "Courant Number",
+      null,
+      0.0
+    ],
+    [
+      "Diffusion Number",
+      null,
+      0.0
+    ],
+    [
+      "Grid Reynolds Number",
+      null,
+      2.5
+    ],
+    [
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null
+    ],
+    [
+      "Residence Time in the river (Days)",
+      null,
+      5.8
+    ],
+    [
+      "Residence Time in a Cell (Seconds)",
+      null,
+      24998.75
+    ],
+    [
+      "Residence Time in the river (Days)",
+      null,
+      2.3
+    ]
+  ],
+  "graphs": [
+    {
+      "object_name": "Chart 1",
+      "title": "Temperature vs time in cell ",
+      "chart_type": 74,
+      "series": [
+        {
+          "name": " @Cell 1",
+          "formula": "=SERIES(\" @Cell 1\",Temperature!$B$26:$B$30,Temperature!$D$26:$D$30,1)",
+          "x_values": [
+            0.0,
+            0.001388888888888889,
+            0.002777777777777778,
+            0.004166666666666667,
+            0.005555555555555556
+          ],
+          "y_values": [
+            20.0,
+            19.984163083958656,
+            19.96834416870334,
+            19.952543225165243,
+            19.936760224343697
+          ]
+        },
+        {
+          "name": " @Cell 5",
+          "formula": "=SERIES(\" @Cell 5\",Temperature!$B$26:$B$30,Temperature!$H$26:$H$30,2)",
+          "x_values": [
+            0.0,
+            0.001388888888888889,
+            0.002777777777777778,
+            0.004166666666666667,
+            0.005555555555555556
+          ],
+          "y_values": [
+            9.0,
+            9.05261800243562,
+            9.104814990931853,
+            9.156593803502854,
+            9.207957259058277
+          ]
+        },
+        {
+          "name": " @Cell 10",
+          "formula": "=SERIES(\" @Cell 10\",Temperature!$B$26:$B$30,Temperature!$M$26:$M$30,3)",
+          "x_values": [
+            0.0,
+            0.001388888888888889,
+            0.002777777777777778,
+            0.004166666666666667,
+            0.005555555555555556
+          ],
+          "y_values": [
+            9.0,
+            8.993336299572212,
+            8.986660537599123,
+            8.979972868038253,
+            8.973273444258355
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Generic vs time in cell ",
+      "chart_type": 74,
+      "series": [
+        {
+          "name": " @Cell 1",
+          "formula": "=SERIES(\" @Cell 1\",Generic!$B$26:$B$30,Generic!$D$26:$D$30,1)",
+          "x_values": [
+            0.0,
+            0.001388888888888889,
+            0.002777777777777778,
+            0.004166666666666667,
+            0.005555555555555556
+          ],
+          "y_values": [
+            1.0,
+            1.0942190654269826,
+            1.1871987493346723,
+            1.2789554227238318,
+            1.3695052394543878
+          ]
+        },
+        {
+          "name": " @Cell 5",
+          "formula": "=SERIES(\" @Cell 5\",Generic!$B$26:$B$30,Generic!$H$26:$H$30,2)",
+          "x_values": [
+            0.0,
+            0.001388888888888889,
+            0.002777777777777778,
+            0.004166666666666667,
+            0.005555555555555556
+          ],
+          "y_values": [
+            1.0,
+            0.9923394438514379,
+            0.9847376305796319,
+            0.9771942194796854,
+            0.9697088599497653
+          ]
+        },
+        {
+          "name": " @Cell 10",
+          "formula": "=SERIES(\" @Cell 10\",Generic!$B$26:$B$30,Generic!$M$26:$M$30,3)",
+          "x_values": [
+            0.0,
+            0.001388888888888889,
+            0.002777777777777778,
+            0.004166666666666667,
+            0.005555555555555556
+          ],
+          "y_values": [
+            1.0,
+            0.9923394438514379,
+            0.9847375718233812,
+            0.977193934362829,
+            0.9697080853606063
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Temperature vs Distance ",
+      "chart_type": 74,
+      "series": [
+        {
+          "name": " @Time 0 Days",
+          "formula": "=SERIES(\" @Time 0 Days\",Temperature!$D$23:$X$23,Temperature!$D$26:$X$26,1)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            20.0,
+            20.0,
+            20.0,
+            20.0,
+            9.0,
+            9.0,
+            9.0,
+            9.0,
+            9.0,
+            9.0,
+            20.0,
+            20.0,
+            20.0,
+            20.0,
+            20.0,
+            20.0,
+            20.0,
+            20.0,
+            20.0,
+            20.0,
+            null
+          ]
+        },
+        {
+          "name": " @Time 0 Days",
+          "formula": "=SERIES(\" @Time 0 Days\",Temperature!$D$23:$X$23,Temperature!$D$27:$X$27,2)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            19.984163083958656,
+            19.984163083958656,
+            19.984163044403676,
+            19.982848124405052,
+            9.05261800243562,
+            8.985526889608273,
+            8.992001543775693,
+            8.992021729086984,
+            8.99202077918997,
+            8.993336299572212,
+            19.923593397757745,
+            19.990653987750466,
+            19.98418226812531,
+            19.98416209508422,
+            19.984163083958656,
+            19.984163083958656,
+            19.984163083958656,
+            19.984163083958656,
+            19.984163083958656,
+            19.984163083958656,
+            null
+          ]
+        },
+        {
+          "name": " @Time 0 Days",
+          "formula": "=SERIES(\" @Time 0 Days\",Temperature!$D$23:$X$23,Temperature!$D$28:$X$28,3)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            19.96834416870334,
+            19.96834416869388,
+            19.96834393293561,
+            19.965731323107065,
+            9.104814990931853,
+            8.971473011067047,
+            8.983932166235906,
+            8.98405126832293,
+            8.984045972777853,
+            8.986660537599123,
+            19.847666217917595,
+            19.980907461773363,
+            19.968457589814726,
+            19.968338608049674,
+            19.968344134040983,
+            19.968344169833404,
+            19.968344168706878,
+            19.96834416870325,
+            19.96834416870334,
+            19.96834416870334,
+            null
+          ]
+        },
+        {
+          "name": " @Time 0 Days",
+          "formula": "=SERIES(\" @Time 0 Days\",Temperature!$D$23:$X$23,Temperature!$D$28:$X$28,4)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            19.96834416870334,
+            19.96834416869388,
+            19.96834393293561,
+            19.965731323107065,
+            9.104814990931853,
+            8.971473011067047,
+            8.983932166235906,
+            8.98405126832293,
+            8.984045972777853,
+            8.986660537599123,
+            19.847666217917595,
+            19.980907461773363,
+            19.968457589814726,
+            19.968338608049674,
+            19.968344134040983,
+            19.968344169833404,
+            19.968344168706878,
+            19.96834416870325,
+            19.96834416870334,
+            19.96834416870334,
+            null
+          ]
+        },
+        {
+          "name": " @Time 0 Days",
+          "formula": "=SERIES(\" @Time 0 Days\",Temperature!$D$23:$X$23,Temperature!$D$29:$X$29,5)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            19.952543225165243,
+            19.952543225118266,
+            19.952542639625047,
+            19.948649396696574,
+            9.156593803502854,
+            8.9578331850781,
+            8.975795109699954,
+            8.976087891369266,
+            8.976075640524776,
+            8.979972868038253,
+            19.77221489973762,
+            19.970766067373805,
+            19.95282260569115,
+            19.952530236900696,
+            19.952543056229345,
+            19.952543230268972,
+            19.952543225216427,
+            19.95254322516407,
+            19.952543225165233,
+            19.952543225165243,
+            null
+          ]
+        },
+        {
+          "name": " @Time 0.01 Days",
+          "formula": "=SERIES(\" @Time 0.01 Days\",Temperature!$D$23:$X$23,Temperature!$D$30:$X$30,6)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            19.936760224343697,
+            19.936760224213057,
+            19.93675913852773,
+            19.931602147379195,
+            9.207957259058277,
+            8.94460228210381,
+            8.967593563168357,
+            8.968130899187711,
+            8.968109835513543,
+            8.973273444258355,
+            19.697235912424734,
+            19.960235389086815,
+            19.937274015829725,
+            19.93673765114944,
+            19.936759763393873,
+            19.936760237149656,
+            19.93676022457397,
+            19.93676022433899,
+            19.93676022434363,
+            19.936760224343704,
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Generic vs Distance ",
+      "chart_type": 74,
+      "series": [
+        {
+          "name": " @Time 0 Days",
+          "formula": "=SERIES(\" @Time 0 Days\",Generic!$D$23:$X$23,Generic!$D$26:$X$26,1)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            null
+          ]
+        },
+        {
+          "name": " @Time 0 Days",
+          "formula": "=SERIES(\" @Time 0 Days\",Generic!$D$23:$X$23,Generic!$D$27:$X$27,2)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            1.0942190654269826,
+            0.9811755630310073,
+            0.9923068633628173,
+            0.9923411407518868,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            null
+          ]
+        },
+        {
+          "name": " @Time 0 Days",
+          "formula": "=SERIES(\" @Time 0 Days\",Generic!$D$23:$X$23,Generic!$D$28:$X$28,3)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            1.1871987493346723,
+            0.9631702245773839,
+            0.9845456780002964,
+            0.9847470854396552,
+            0.9847376305796319,
+            0.9847375698939639,
+            0.9847375718173795,
+            0.9847375718235326,
+            0.9847375718233811,
+            0.9847375718233812,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            null
+          ]
+        },
+        {
+          "name": " @Time 0 Days",
+          "formula": "=SERIES(\" @Time 0 Days\",Generic!$D$23:$X$23,Generic!$D$28:$X$28,4)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            1.1871987493346723,
+            0.9631702245773839,
+            0.9845456780002964,
+            0.9847470854396552,
+            0.9847376305796319,
+            0.9847375698939639,
+            0.9847375718173795,
+            0.9847375718235326,
+            0.9847375718233811,
+            0.9847375718233812,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            null
+          ]
+        },
+        {
+          "name": " @Time 0 Days",
+          "formula": "=SERIES(\" @Time 0 Days\",Generic!$D$23:$X$23,Generic!$D$29:$X$29,5)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            1.2789554227238318,
+            0.9459656183578349,
+            0.9767230379732367,
+            0.9772160938954636,
+            0.9771942194796854,
+            0.977193925678157,
+            0.9771939342764124,
+            0.9771939343648127,
+            0.9771939343628424,
+            0.977193934362829,
+            0.9771939343628293,
+            0.9771939343628293,
+            0.9771939343628293,
+            0.9771939343628293,
+            0.9771939343628293,
+            0.9771939343628293,
+            0.9771939343628293,
+            0.9771939343628293,
+            0.9771939343628293,
+            0.9771939343628293,
+            null
+          ]
+        },
+        {
+          "name": " @Time 0.01 Days",
+          "formula": "=SERIES(\" @Time 0.01 Days\",Generic!$D$23:$X$23,Generic!$D$30:$X$30,6)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            1.3695052394543878,
+            0.9295437213559983,
+            0.9688453289770405,
+            0.9697464996040294,
+            0.9697088599497653,
+            0.9697080636358129,
+            0.9697080849736818,
+            0.9697080853685774,
+            0.9697080853607252,
+            0.9697080853606063,
+            0.9697080853606084,
+            0.9697080853606085,
+            0.9697080853606085,
+            0.9697080853606085,
+            0.9697080853606085,
+            0.9697080853606085,
+            0.9697080853606085,
+            0.9697080853606085,
+            0.9697080853606085,
+            0.9697080853606085,
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Time Series at Cell 1",
+      "chart_type": 72,
+      "series": [
+        {
+          "name": "Temperature",
+          "formula": "=SERIES(\"Temperature\",Temperature!$B$26:$B$30,Temperature!$D$26:$D$30,1)",
+          "x_values": [
+            0.0,
+            0.001388888888888889,
+            0.002777777777777778,
+            0.004166666666666667,
+            0.005555555555555556
+          ],
+          "y_values": [
+            20.0,
+            19.984163083958656,
+            19.96834416870334,
+            19.952543225165243,
+            19.936760224343697
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Time Series at Cell 1",
+      "chart_type": 72,
+      "series": [
+        {
+          "name": "Generic",
+          "formula": "=SERIES(\"Generic\",Generic!$B$26:$B$30,Generic!$D$26:$D$30,1)",
+          "x_values": [
+            0.0,
+            0.001388888888888889,
+            0.002777777777777778,
+            0.004166666666666667,
+            0.005555555555555556
+          ],
+          "y_values": [
+            1.0,
+            1.0942190654269826,
+            1.1871987493346723,
+            1.2789554227238318,
+            1.3695052394543878
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Time Series at Cell 5",
+      "chart_type": 72,
+      "series": [
+        {
+          "name": "Temperature",
+          "formula": "=SERIES(\"Temperature\",Temperature!$B$26:$B$30,Temperature!$H$26:$H$30,1)",
+          "x_values": [
+            0.0,
+            0.001388888888888889,
+            0.002777777777777778,
+            0.004166666666666667,
+            0.005555555555555556
+          ],
+          "y_values": [
+            9.0,
+            9.05261800243562,
+            9.104814990931853,
+            9.156593803502854,
+            9.207957259058277
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Time Series at Cell 5",
+      "chart_type": 72,
+      "series": [
+        {
+          "name": "Generic",
+          "formula": "=SERIES(\"Generic\",Generic!$B$26:$B$30,Generic!$H$26:$H$30,1)",
+          "x_values": [
+            0.0,
+            0.001388888888888889,
+            0.002777777777777778,
+            0.004166666666666667,
+            0.005555555555555556
+          ],
+          "y_values": [
+            1.0,
+            0.9923394438514379,
+            0.9847376305796319,
+            0.9771942194796854,
+            0.9697088599497653
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Time Series at Cell 10",
+      "chart_type": 72,
+      "series": [
+        {
+          "name": "Temperature",
+          "formula": "=SERIES(\"Temperature\",Temperature!$B$26:$B$30,Temperature!$M$26:$M$30,1)",
+          "x_values": [
+            0.0,
+            0.001388888888888889,
+            0.002777777777777778,
+            0.004166666666666667,
+            0.005555555555555556
+          ],
+          "y_values": [
+            9.0,
+            8.993336299572212,
+            8.986660537599123,
+            8.979972868038253,
+            8.973273444258355
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Time Series at Cell 10",
+      "chart_type": 72,
+      "series": [
+        {
+          "name": "Generic",
+          "formula": "=SERIES(\"Generic\",Generic!$B$26:$B$30,Generic!$M$26:$M$30,1)",
+          "x_values": [
+            0.0,
+            0.001388888888888889,
+            0.002777777777777778,
+            0.004166666666666667,
+            0.005555555555555556
+          ],
+          "y_values": [
+            1.0,
+            0.9923394438514379,
+            0.9847375718233812,
+            0.977193934362829,
+            0.9697080853606063
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Longitudinal Profile 0 days after start",
+      "chart_type": 72,
+      "series": [
+        {
+          "name": "Temperature",
+          "formula": "=SERIES(\"Temperature\",Temperature!$D$23:$X$23,Temperature!$D$26:$X$26,1)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            20.0,
+            20.0,
+            20.0,
+            20.0,
+            9.0,
+            9.0,
+            9.0,
+            9.0,
+            9.0,
+            9.0,
+            20.0,
+            20.0,
+            20.0,
+            20.0,
+            20.0,
+            20.0,
+            20.0,
+            20.0,
+            20.0,
+            20.0,
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Longitudinal Profile 0 days after start",
+      "chart_type": 72,
+      "series": [
+        {
+          "name": "Generic",
+          "formula": "=SERIES(\"Generic\",Generic!$D$23:$X$23,Generic!$D$26:$X$26,1)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Longitudinal Profile 0 days after start",
+      "chart_type": 72,
+      "series": [
+        {
+          "name": "Temperature",
+          "formula": "=SERIES(\"Temperature\",Temperature!$D$23:$X$23,Temperature!$D$27:$X$27,1)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            19.984163083958656,
+            19.984163083958656,
+            19.984163044403676,
+            19.982848124405052,
+            9.05261800243562,
+            8.985526889608273,
+            8.992001543775693,
+            8.992021729086984,
+            8.99202077918997,
+            8.993336299572212,
+            19.923593397757745,
+            19.990653987750466,
+            19.98418226812531,
+            19.98416209508422,
+            19.984163083958656,
+            19.984163083958656,
+            19.984163083958656,
+            19.984163083958656,
+            19.984163083958656,
+            19.984163083958656,
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Longitudinal Profile 0 days after start",
+      "chart_type": 72,
+      "series": [
+        {
+          "name": "Generic",
+          "formula": "=SERIES(\"Generic\",Generic!$D$23:$X$23,Generic!$D$27:$X$27,1)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            1.0942190654269826,
+            0.9811755630310073,
+            0.9923068633628173,
+            0.9923411407518868,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            0.9923394438514379,
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Longitudinal Profile 0 days after start",
+      "chart_type": 72,
+      "series": [
+        {
+          "name": "Temperature",
+          "formula": "=SERIES(\"Temperature\",Temperature!$D$23:$X$23,Temperature!$D$28:$X$28,1)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            19.96834416870334,
+            19.96834416869388,
+            19.96834393293561,
+            19.965731323107065,
+            9.104814990931853,
+            8.971473011067047,
+            8.983932166235906,
+            8.98405126832293,
+            8.984045972777853,
+            8.986660537599123,
+            19.847666217917595,
+            19.980907461773363,
+            19.968457589814726,
+            19.968338608049674,
+            19.968344134040983,
+            19.968344169833404,
+            19.968344168706878,
+            19.96834416870325,
+            19.96834416870334,
+            19.96834416870334,
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Longitudinal Profile 0 days after start",
+      "chart_type": 72,
+      "series": [
+        {
+          "name": "Generic",
+          "formula": "=SERIES(\"Generic\",Generic!$D$23:$X$23,Generic!$D$28:$X$28,1)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            1.1871987493346723,
+            0.9631702245773839,
+            0.9845456780002964,
+            0.9847470854396552,
+            0.9847376305796319,
+            0.9847375698939639,
+            0.9847375718173795,
+            0.9847375718235326,
+            0.9847375718233811,
+            0.9847375718233812,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Longitudinal Profile 0 days after start",
+      "chart_type": 72,
+      "series": [
+        {
+          "name": "Temperature",
+          "formula": "=SERIES(\"Temperature\",Temperature!$D$23:$X$23,Temperature!$D$28:$X$28,1)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            19.96834416870334,
+            19.96834416869388,
+            19.96834393293561,
+            19.965731323107065,
+            9.104814990931853,
+            8.971473011067047,
+            8.983932166235906,
+            8.98405126832293,
+            8.984045972777853,
+            8.986660537599123,
+            19.847666217917595,
+            19.980907461773363,
+            19.968457589814726,
+            19.968338608049674,
+            19.968344134040983,
+            19.968344169833404,
+            19.968344168706878,
+            19.96834416870325,
+            19.96834416870334,
+            19.96834416870334,
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Longitudinal Profile 0 days after start",
+      "chart_type": 72,
+      "series": [
+        {
+          "name": "Generic",
+          "formula": "=SERIES(\"Generic\",Generic!$D$23:$X$23,Generic!$D$28:$X$28,1)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            1.1871987493346723,
+            0.9631702245773839,
+            0.9845456780002964,
+            0.9847470854396552,
+            0.9847376305796319,
+            0.9847375698939639,
+            0.9847375718173795,
+            0.9847375718235326,
+            0.9847375718233811,
+            0.9847375718233812,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            0.9847375718233811,
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Longitudinal Profile 0 days after start",
+      "chart_type": 72,
+      "series": [
+        {
+          "name": "Temperature",
+          "formula": "=SERIES(\"Temperature\",Temperature!$D$23:$X$23,Temperature!$D$29:$X$29,1)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            19.952543225165243,
+            19.952543225118266,
+            19.952542639625047,
+            19.948649396696574,
+            9.156593803502854,
+            8.9578331850781,
+            8.975795109699954,
+            8.976087891369266,
+            8.976075640524776,
+            8.979972868038253,
+            19.77221489973762,
+            19.970766067373805,
+            19.95282260569115,
+            19.952530236900696,
+            19.952543056229345,
+            19.952543230268972,
+            19.952543225216427,
+            19.95254322516407,
+            19.952543225165233,
+            19.952543225165243,
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Longitudinal Profile 0 days after start",
+      "chart_type": 72,
+      "series": [
+        {
+          "name": "Generic",
+          "formula": "=SERIES(\"Generic\",Generic!$D$23:$X$23,Generic!$D$29:$X$29,1)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            1.2789554227238318,
+            0.9459656183578349,
+            0.9767230379732367,
+            0.9772160938954636,
+            0.9771942194796854,
+            0.977193925678157,
+            0.9771939342764124,
+            0.9771939343648127,
+            0.9771939343628424,
+            0.977193934362829,
+            0.9771939343628293,
+            0.9771939343628293,
+            0.9771939343628293,
+            0.9771939343628293,
+            0.9771939343628293,
+            0.9771939343628293,
+            0.9771939343628293,
+            0.9771939343628293,
+            0.9771939343628293,
+            0.9771939343628293,
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Longitudinal Profile 0.01 days after start",
+      "chart_type": 72,
+      "series": [
+        {
+          "name": "Temperature",
+          "formula": "=SERIES(\"Temperature\",Temperature!$D$23:$X$23,Temperature!$D$30:$X$30,1)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            19.936760224343697,
+            19.936760224213057,
+            19.93675913852773,
+            19.931602147379195,
+            9.207957259058277,
+            8.94460228210381,
+            8.967593563168357,
+            8.968130899187711,
+            8.968109835513543,
+            8.973273444258355,
+            19.697235912424734,
+            19.960235389086815,
+            19.937274015829725,
+            19.93673765114944,
+            19.936759763393873,
+            19.936760237149656,
+            19.93676022457397,
+            19.93676022433899,
+            19.93676022434363,
+            19.936760224343704,
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "object_name": "Chart 1",
+      "title": "Longitudinal Profile 0.01 days after start",
+      "chart_type": 72,
+      "series": [
+        {
+          "name": "Generic",
+          "formula": "=SERIES(\"Generic\",Generic!$D$23:$X$23,Generic!$D$30:$X$30,1)",
+          "x_values": [
+            250.0,
+            750.0,
+            1250.0,
+            1750.0,
+            2250.0,
+            2750.0,
+            3250.0,
+            3750.0,
+            4250.0,
+            4750.0,
+            5250.0,
+            5750.0,
+            6250.0,
+            6750.0,
+            7250.0,
+            7750.0,
+            8250.0,
+            8750.0,
+            9250.0,
+            9750.0,
+            null
+          ],
+          "y_values": [
+            1.3695052394543878,
+            0.9295437213559983,
+            0.9688453289770405,
+            0.9697464996040294,
+            0.9697088599497653,
+            0.9697080636358129,
+            0.9697080849736818,
+            0.9697080853685774,
+            0.9697080853607252,
+            0.9697080853606063,
+            0.9697080853606084,
+            0.9697080853606085,
+            0.9697080853606085,
+            0.9697080853606085,
+            0.9697080853606085,
+            0.9697080853606085,
+            0.9697080853606085,
+            0.9697080853606085,
+            0.9697080853606085,
+            0.9697080853606085,
+            null
+          ]
+        }
+      ]
+    }
+  ],
+  "dialogs": [
+    {
+      "title": "Microsoft Excel",
+      "text": "OK | The Application Ended"
+    }
+  ]
+}
