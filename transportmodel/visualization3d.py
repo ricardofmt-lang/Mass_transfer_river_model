@@ -17,6 +17,7 @@ from .numerical import SimulationResult
 COLORSCALE = "RdYlBu_r"  # low values blue, high values red
 
 
+# Cell centres define the physical x positions; edge reconstruction closes the first and last cells.
 def _cell_edges(centers: list[float], length_m: float) -> list[float]:
     if not centers:
         raise ValueError("A 3D river requires at least one cell")
@@ -28,14 +29,17 @@ def _cell_edges(centers: list[float], length_m: float) -> list[float]:
             + [centers[-1] + (centers[-1] - centers[-2]) / 2])
 
 
+# Repeat each one-dimensional value across the rendered channel cross-section.
 def _cell_color_row(values: list[float]) -> list[float]:
     return [value for cell in values for value in (cell, cell)]
 
 
+# A single value colors the upstream or downstream end face.
 def _end_color(value: float) -> list[list[float]]:
     return [[value, value], [value, value]]
 
 
+# Build top, side, and end faces with the same property value through the full depth.
 def _channel_surfaces(
     x_nodes: list[float], edges: list[float], width: float, depth: float,
     color_row: list[float], *, property_name: str, units: str | None,
@@ -89,6 +93,7 @@ def _channel_surfaces(
     ]
 
 
+# Use one fixed color scale for every time frame so an animation's colors remain comparable.
 def build_river_3d_figure(
     result: SimulationResult,
     property_name: str,

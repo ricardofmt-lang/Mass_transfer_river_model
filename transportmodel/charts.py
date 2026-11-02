@@ -31,11 +31,13 @@ COLOR_RGB = {3: "#FF0000", 33: "#00CCFF", 41: "#3366FF",
              45: "#FF9900", 55: "#333399"}
 
 
+# Charts should include only properties calculated in this simulation.
 def _eligible_sheets(result: SimulationResult, order: tuple[str, ...]) -> list[str]:
     """Only chart properties actually calculated in this simulation."""
     return [name for name in order if name in result.values]
 
 
+# Convert one-based worksheet columns to Excel A1 references.
 def _column_letter(column: int) -> str:
     letters = ""
     while column:
@@ -44,6 +46,7 @@ def _column_letter(column: int) -> str:
     return letters
 
 
+# Quote worksheet names so formula metadata remains valid when names contain spaces.
 def _sheet_ref(name: str) -> str:
     # Excel quotes names that can be parsed as an A1 cell reference; CO2 is
     # one such name even though it otherwise looks like an identifier.
@@ -52,12 +55,14 @@ def _sheet_ref(name: str) -> str:
     return name if bare and not cell_like else "'" + name.replace("'", "''") + "'"
 
 
+# Build the exact worksheet range represented by a plotted series.
 def _range(name: str, first_col: int, first_row: int, last_col: int, last_row: int) -> str:
     sheet = _sheet_ref(name)
     return (f"{sheet}!${_column_letter(first_col)}${first_row}:"
             f"${_column_letter(last_col)}${last_row}")
 
 
+# Store X and Y values alongside series names and original Excel formula metadata.
 def _series(name: str, x: list[float | None], y: list[float | None],
             x_range: str, y_range: str, index: int) -> dict[str, Any]:
     return {
@@ -68,6 +73,7 @@ def _series(name: str, x: list[float | None], y: list[float | None],
     }
 
 
+# VBA rounds graph selector values before turning them into row or cell indices.
 def _vba_number(value: float) -> str:
     """VBA's default string form after ``Round(value, 2)`` for chart labels."""
     # VBA's decimal midpoint rule differs from Python's binary-float round:
@@ -77,17 +83,20 @@ def _vba_number(value: float) -> str:
     return "0" if result in ("", "-", "-0") else result
 
 
+# The original macro accepts several numeric cell types and coerces them to Double.
 def _vba_cell_number(value: Any) -> float:
     # A blank worksheet cell is numerically zero in these VBA assignments.
     return 0.0 if value is None or value == "" else float(value)
 
 
+# A percentage selector chooses a printed time row, not a simulation step.
 def _percentage_row(raw: Any, row_count: int) -> int:
     # CInt uses banker's rounding; assignment of the line to Long rounds again.
     percentage = int(round(_vba_cell_number(raw)))
     return int(round(26 + percentage / 100 * (row_count - 1))) - 26
 
 
+# Ignore blank values when deriving chart axis limits.
 def _axis_bounds(numbers: list[float | None]) -> tuple[float | None, float | None]:
     values = [float(value) for value in numbers if value is not None]
     if not values:
@@ -106,6 +115,7 @@ def _axis_bounds(numbers: list[float | None]) -> tuple[float | None, float | Non
     return ymin, ymax
 
 
+# Bundle title, style, axis ranges, and series into a serializable chart specification.
 def _chart(title: str, name: str, chart_type: int, series: list[dict[str, Any]],
            left: float, top: float, axis_values: list[float | None] | None,
            no_major_gridlines: bool, source_status: str) -> dict[str, Any]:
@@ -132,6 +142,7 @@ def _chart(title: str, name: str, chart_type: int, series: list[dict[str, Any]],
     }
 
 
+# Follow the macro's chart order, but read data from this run's result arrays.
 def build_charts(
     result: SimulationResult,
     config: dict[str, Any],
@@ -147,18 +158,22 @@ def build_charts(
     x_days = [time / 86400 for time in result.time_seconds]
     x_space: list[float | None] = [*result.coordinates_m, None]
 
+    # Align sparse chart selectors with their expected workbook column count.
     def _pad(items: list[Any] | None, size: int) -> list[Any]:
         values = list(items or [])[:size]
         return values + [None] * (size - len(values))
 
+    # Read all printed rows for one property in workbook order.
     def rows(name: str) -> list[list[float | None]]:
         data = result.values[name]
         return [_pad(list(row), nc + 1)
                 for row in list(data[:row_count]) + [[None] * (nc + 1)] * max(0, row_count - len(data))]
 
+    # Convert printed seconds to days for the workbook's time axis.
     def sheet_days(name: str) -> list[float | None]:
         return x_days.copy()
 
+    # Return physical cell centres for the workbook's distance axis.
     def sheet_space(name: str) -> list[float | None]:
         return x_space.copy()
 

@@ -10,12 +10,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+# Index zero is deliberately unused; Excel/VBA arrays in this model start at one.
 def zeros(n: int) -> list[float]:
     """Allocate indices 1..n; index zero remains an unused VBA-style slot."""
     return [0.0] * (n + 1)
 
 
 @dataclass
+# Grid stores geometry and cell-centre positions. Length and dx are metres; areas are square metres.
 class Grid:
     Length: float = 0.0
     AreaVertical: float = 0.0
@@ -28,6 +30,7 @@ class Grid:
 
 
 @dataclass
+# FlowProperties couples velocity and dispersion with dimensionless Courant and diffusion numbers.
 class FlowProperties:
     velocity: float = 0.0
     Diffusivity: float = 0.0
@@ -37,6 +40,7 @@ class FlowProperties:
 
 
 @dataclass
+# GasProperties keeps pressure, molecular weight, and the temperature/Henry lookup table together.
 class GasProperties:
     Label: str = ""
     partialpressure: float = 0.0
@@ -46,6 +50,7 @@ class GasProperties:
 
 
 @dataclass
+# Atmosphere holds forcing shared by surface heat and gas exchange across all river cells.
 class Atmosphere:
     Temperature: float = 0.0
     windspeed: float = 0.0
@@ -62,6 +67,7 @@ class Atmosphere:
 
 
 @dataclass
+# Controls mirrors the macro's time, print, and scheme switches; T advances in seconds.
 class Controls:
     T: float = 0.0
     timedays: float = 0.0
@@ -83,6 +89,7 @@ class Controls:
 
 
 @dataclass
+# One lateral source has a cell, volumetric flow, and a property-specific value.
 class DischargeProperties:
     Number: int = 0
     name: str = ""
@@ -92,6 +99,7 @@ class DischargeProperties:
 
 
 @dataclass
+# Each property has its own discharge list, because a source can have different concentrations.
 class DischargesList:
     NumberOfDischarges: int = 0
     DischargesActive: bool = False
@@ -99,6 +107,7 @@ class DischargesList:
 
 
 @dataclass
+# This groups inlet values, surface switches, and lateral sources for one property.
 class BoundaryCondition:
     LeftType: int = 0
     LeftValue: float = 0.0
@@ -114,6 +123,7 @@ class BoundaryCondition:
 
 
 @dataclass
+# Old and NewValue are one-based concentration arrays; source terms mutate NewValue in place.
 class PropertyState:
     SheetName: str = ""
     name: str = ""
@@ -138,6 +148,7 @@ class PropertyState:
 
 
 @dataclass
+# The five named properties share one time loop, but each can be active independently.
 class PropertiesList:
     Generic: PropertyState = field(default_factory=PropertyState)
     Temperature: PropertyState = field(default_factory=PropertyState)
@@ -147,6 +158,7 @@ class PropertiesList:
 
 
 @dataclass
+# These arrays represent the five-point transport stencil and the linear-system diagonals.
 class EquationCoef:
     A: list[float] = field(default_factory=list)
     B: list[float] = field(default_factory=list)
@@ -164,6 +176,7 @@ class EquationCoef:
     TiCoef: list[float] = field(default_factory=list)
 
     @classmethod
+    # Allocate every coefficient array with the unused index-zero slot required by the port.
     def allocate(cls, n: int) -> "EquationCoef":
         return cls(**{name: zeros(n) for name in cls.__dataclass_fields__})
 

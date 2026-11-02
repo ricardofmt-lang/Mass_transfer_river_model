@@ -21,6 +21,7 @@ FIRST_PORT = 8502
 LAST_PORT = 8599
 
 
+# Ask Windows for structured process data so port ownership can be checked reliably.
 def _powershell_json(command: str) -> Any:
     try:
         completed = subprocess.run(
@@ -32,6 +33,7 @@ def _powershell_json(command: str) -> Any:
         return None
 
 
+# Map listening TCP ports to the process IDs that own them.
 def _listener_owners() -> dict[int, list[int]]:
     command = (
         "Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | "
@@ -49,6 +51,7 @@ def _listener_owners() -> dict[int, list[int]]:
     return owners
 
 
+# Inspect a candidate process before assuming it is this river app.
 def _process(pid: int) -> dict[str, Any] | None:
     data = _powershell_json(
         f'Get-CimInstance Win32_Process -Filter "ProcessId = {pid}" | '
@@ -58,6 +61,7 @@ def _process(pid: int) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+# Reuse a port only if its owner is this app and its health endpoint responds.
 def _same_app(pid: int, port: int, process: Callable[[int], dict[str, Any] | None] = _process) -> bool:
     """Match the Streamlit command and this project's venv in its ancestry."""
     seen: set[int] = set()
@@ -84,6 +88,7 @@ def _same_app(pid: int, port: int, process: Callable[[int], dict[str, Any] | Non
     return False
 
 
+# A Streamlit health response confirms the existing local server is ready.
 def _healthy(port: int) -> bool:
     try:
         with urlopen(f"http://127.0.0.1:{port}/_stcore/health", timeout=1) as response:
@@ -92,6 +97,7 @@ def _healthy(port: int) -> bool:
         return False
 
 
+# Bind to loopback briefly to find an unused port without exposing the service remotely.
 def _free(port: int) -> bool:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
@@ -101,6 +107,7 @@ def _free(port: int) -> bool:
         return False
 
 
+# Prefer the customary river port, then choose the next free local port.
 def choose_port(
     owners: dict[int, list[int]],
     same_app: Callable[[int, int], bool],
@@ -118,6 +125,7 @@ def choose_port(
     raise RuntimeError(f"No free local port from {first} through {last}")
 
 
+# Start the app with the project interpreter and print the URL to open.
 def main() -> int:
     if not PYTHON.is_file():
         print("Create the environment with: py -3.12 -m venv .venv")

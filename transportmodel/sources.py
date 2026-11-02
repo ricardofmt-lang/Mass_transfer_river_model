@@ -22,9 +22,12 @@ class CellCalculationError(ArithmeticError):
         super().__init__(detail)
 
 
+# Mix a lateral flow into one cell by volume balance before longitudinal transport.
 def ApplyDischarges(Prop: PropertyState, gr: Grid, dt: float) -> None:
     """Apply each continuous discharge as a sequential cell-volume mix (VBA 933–949)."""
     discharges = Prop.Boundary.PropDischarges
+    # Numerator is old river content plus incoming content; denominator is
+    # the combined water volume during this time step.
     for i in range(1, discharges.NumberOfDischarges + 1):
         discharge = discharges.Discharge[i]
         ncell = discharge.cell
@@ -49,11 +52,13 @@ def ApplyDischarges(Prop: PropertyState, gr: Grid, dt: float) -> None:
             ) from exc
 
 
+# The empirical heat-transfer coefficient rises quadratically with wind speed.
 def h(windspeed: float, h_min: float) -> float:
     """Surface heat exchange coefficient (VBA 1090–1092)."""
     return h_min + 0.345 * windspeed**2
 
 
+# Compute saturation vapour pressure from temperature using the macro's Magnus expression.
 def Es(T: float, *, source: str = "water") -> float:
     """Saturation vapour pressure in mbar (VBA 1093–1103)."""
     a = 6.112
@@ -75,6 +80,7 @@ def Es(T: float, *, source: str = "water") -> float:
         ) from exc
 
 
+# Net long-wave heat is sky emission minus water emission.
 def FluxRadiative(watertemperature: float, atm: Atmosphere) -> float:
     """Net long-wave radiation, with optional imposed sky temperature (VBA 1104–1115)."""
     epson = 0.97
@@ -95,6 +101,7 @@ def FluxRadiative(watertemperature: float, atm: Atmosphere) -> float:
     )
 
 
+# A daylight sine curve, latitude, absorption, and cloud factor determine short-wave input.
 def Solar_Radiation(timedays: float, atm: Atmosphere) -> float:
     """Daily sine solar forcing at the VBA's end-of-step time (VBA 997–1014)."""
     pi = 3.14159265358979
@@ -111,6 +118,7 @@ def Solar_Radiation(timedays: float, atm: Atmosphere) -> float:
     )
 
 
+# Solar, sensible, latent, and long-wave terms update temperature sequentially.
 def ExpFreeSurfaceHeatFluxes(
     Temperature: PropertyState, gr: Grid, ctrl: Controls, atm: Atmosphere
 ) -> None:
@@ -189,12 +197,14 @@ def ExpFreeSurfaceHeatFluxes(
                 ) from exc
 
 
+# This helper exists for VBA parity but the executed gas routine does not call it.
 def KGas(watertemperature: float, velocity: float, depth: float) -> float:
     """The alternative VBA gas coefficient (1040–1046), unused by ``Channel``."""
     k = 3.9 * ((abs(velocity) + 0.001) / depth) ** 0.5
     return k * 1.024 ** (watertemperature - 20)
 
 
+# This historical helper is present but not used by the executed BOD routine.
 def Kd_BOD(Oxygen: float, BOD: PropertyState, Temperature: float) -> float:
     """The VBA BOD-rate helper (1048–1058), unused by ``ExpSinksBOD``."""
     if Oxygen > 0:
@@ -203,6 +213,7 @@ def Kd_BOD(Oxygen: float, BOD: PropertyState, Temperature: float) -> float:
     return 0.0
 
 
+# Interpolate Henry's constant at water temperature, then multiply by pressure and molecular weight.
 def getCsat_Henry(Prop: PropertyState, WaterTemp: float) -> float:
     """Interpolate or clamp Henry saturation data (VBA 1060–1089).
 
@@ -212,6 +223,7 @@ def getCsat_Henry(Prop: PropertyState, WaterTemp: float) -> float:
     """
     gas = Prop.Boundary.ValuesForFreeSurfaceGasExchange
     values = gas.HenryConstValues
+    # Clamp outside the temperature table and interpolate between its knots.
     j = 1
     for _ in range(gas.N_HenryConstants):
         if WaterTemp > values[1][j]:
@@ -234,6 +246,7 @@ def getCsat_Henry(Prop: PropertyState, WaterTemp: float) -> float:
     return k_henry_interpolated * gas.partialpressure * gas.MolecularWeight
 
 
+# Gas exchange relaxes each cell toward Henry saturation with an implicit one-cell update.
 def ExpFreeSurfaceGasFluxes(
     Temperature: PropertyState,
     Gas: PropertyState,
@@ -255,6 +268,7 @@ def ExpFreeSurfaceGasFluxes(
             * (abs(atm.windspeed) + 0.1)
             * (flow.Riverslope + 0.00001)
         )
+        # The workbook treats supersaturated water as faster to degas.
         if csat - Gas.NewValue[i] < 0:
             k_gas_exchange = k_gas_exchange * (
                 1 + 20 * (Gas.NewValue[i] - csat) / (csat + Gas.NewValue[i])
@@ -264,6 +278,7 @@ def ExpFreeSurfaceGasFluxes(
         ) / (1 + ctrl.dt * k_gas_exchange)
 
 
+# An explicit first-order source changes Generic proportionally to its current value.
 def ExpSinksGeneric(Generic: PropertyState, NC: int, dt: float) -> None:
     """Explicit generic growth/decay and optional floor (VBA 1116–1130)."""
     if Generic.MinimumActive:
@@ -278,6 +293,7 @@ def ExpSinksGeneric(Generic: PropertyState, NC: int, dt: float) -> None:
             )
 
 
+# BOD consumption lowers DO, raises CO2, and records separate aerobic and anaerobic totals.
 def ExpSinksBOD(pr: PropertiesList, gr: Grid, dt: float) -> None:
     """Couple BOD, DO, CO2 and accumulated respiration (VBA 1131–1187)."""
     for i in range(1, gr.NC + 1):
@@ -289,6 +305,8 @@ def ExpSinksBOD(pr: PropertiesList, gr: Grid, dt: float) -> None:
                 * (1 - pr.BOD.NewValue[i] / pr.BOD.MaxValLogisticEquation) ** 0.5
             )
 
+        # Growth has already modified BOD; the subsequent reaction couples
+        # aerobic BOD loss, oxygen consumption, and carbon-dioxide production.
         bod_before_decay = pr.BOD.NewValue[i]
         try:
             temperature_acceleration = 1.047 ** (pr.Temperature.NewValue[i] - 20)
@@ -342,6 +360,7 @@ def ExpSinksBOD(pr: PropertiesList, gr: Grid, dt: float) -> None:
             )
 
 
+# The generic source uses implicit or centred time weighting when transport is not explicit.
 def ImpTypeSinksGeneric(Generic: PropertyState, NC: int, ctrl: Controls) -> None:
     """Implicit or semi-implicit generic source (VBA 1191–1211)."""
     for i in range(1, NC + 1):

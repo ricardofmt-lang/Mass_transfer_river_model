@@ -10,6 +10,7 @@ from __future__ import annotations
 from .state import Controls, EquationCoef, FlowProperties, Grid, PropertyState
 
 
+# Clear the current step's transport coefficients before adding diffusion and advection.
 def zero_coeffs(coef: EquationCoef, grid: Grid) -> None:
     """Port of ``ZerosCoeffs``; the three ``*_up`` arrays are not cleared."""
     for i in range(1, grid.NC + 1):
@@ -26,8 +27,11 @@ def zero_coeffs(coef: EquationCoef, grid: Grid) -> None:
         coef.TiCoef[i] = 0.0
 
 
+# Build dimensionless stencil weights from D = diffusivity dt / dx squared and Cr = velocity dt / dx.
 def coef_transport(flow: FlowProperties, nc: int, ctrl: Controls, coef: EquationCoef) -> None:
     """Port of ``CoefTransport``. Call ``zero_coeffs`` first each time step."""
+    # Diffusion contributes D to each neighbour and -2D to an interior cell.
+    # End cells have only one neighbour inside the modelled reach.
     if ctrl.Diffusion:
         coef.A[1] = 0.0
         coef.B[1] = 0.0
@@ -48,6 +52,8 @@ def coef_transport(flow: FlowProperties, nc: int, ctrl: Controls, coef: Equation
             coef.f[i] = flow.DiffusionNr
             coef.g[i] = 0.0
 
+    # The advection coefficients are added to the diffusion stencil. Signed
+    # Courant numbers make positive and negative flow use opposite upwind sides.
     if ctrl.Advection:
         if ctrl.AdvType == "upwind":
             if flow.velocity > 0:
@@ -62,6 +68,8 @@ def coef_transport(flow: FlowProperties, nc: int, ctrl: Controls, coef: Equation
                     coef.f[i] = coef.f[i] - flow.CourantNr
 
         elif ctrl.AdvType == "QUICK":
+            # QUICK uses two upstream cells; the optional *_up arrays hold a
+            # lower-order fallback when a steep gradient makes QUICK oscillate.
             if ctrl.QUICK_UP:
                 if flow.velocity > 0:
                     for i in range(1, nc + 1):
@@ -110,6 +118,8 @@ def coef_transport(flow: FlowProperties, nc: int, ctrl: Controls, coef: Equation
                 coef.f[nc] = coef.f[nc] - 9 / 8 * flow.CourantNr
 
         elif ctrl.AdvType == "central":
+            # Central differencing divides the advective face contribution
+            # equally between left and right neighbours.
             for i in range(2, nc):
                 coef.B[i] = coef.B[i] + flow.CourantNr / 2
                 coef.f[i] = coef.f[i] - flow.CourantNr / 2
@@ -127,8 +137,11 @@ def coef_transport(flow: FlowProperties, nc: int, ctrl: Controls, coef: Equation
         # VBA displays a message and continues when AdvType is unknown.
 
 
+# Choose the solver from the spatial stencil and time scheme; the decision matches VBA branching.
 def transport(prop: PropertyState, coef: EquationCoef, nc: int, ctrl: Controls) -> None:
     """Dispatch exactly as ``Transport``; AdvType is tested even if advection is off."""
+    # Keep spatial and temporal choices separate: QUICK needs five diagonals,
+    # whereas upwind and central schemes need only three.
     if ctrl.AdvType == "QUICK":
         if ctrl.TimeDiscretisation == "exp":
             _exp_quick_transport(prop, coef, nc, ctrl)
@@ -145,19 +158,24 @@ def transport(prop: PropertyState, coef: EquationCoef, nc: int, ctrl: Controls) 
             _semi_imp_transport(prop, coef, nc)
 
 
+# Explicit transport reads only Old values, so a cell updated earlier cannot affect its neighbour.
 def _exp_transport(prop: PropertyState, coef: EquationCoef, nc: int) -> None:
+    # Freeze the old field first. Every new value must read the same time level.
     for i in range(1, nc + 1):
         prop.Old[i] = prop.NewValue[i]
         coef.LeftCoef[i] = coef.B[i]
         coef.CenterCoef[i] = 1 + coef.e[i]
         coef.RigthCoef[i] = coef.f[i]
 
+    # At the first and last cells, a prescribed boundary value replaces the
+    # neighbour that lies beyond the computational grid.
     prop.NewValue[1] = coef.LeftCoef[1] * prop.Boundary.LeftValue + coef.CenterCoef[1] * prop.Old[1] + coef.RigthCoef[1] * prop.Old[2]
     for i in range(2, nc):
         prop.NewValue[i] = coef.LeftCoef[i] * prop.Old[i - 1] + coef.CenterCoef[i] * prop.Old[i] + coef.RigthCoef[i] * prop.Old[i + 1]
     prop.NewValue[nc] = coef.LeftCoef[nc] * prop.Old[nc - 1] + coef.CenterCoef[nc] * prop.Old[nc] + coef.RigthCoef[nc] * prop.Boundary.RightValue
 
 
+# QUICK reaches two cells upstream and may switch locally to upwind near sharp gradients.
 def _exp_quick_transport(prop: PropertyState, coef: EquationCoef, nc: int, ctrl: Controls) -> None:
     for i in range(1, nc + 1):
         prop.Old[i] = prop.NewValue[i]
@@ -189,6 +207,7 @@ def _exp_quick_transport(prop: PropertyState, coef: EquationCoef, nc: int, ctrl:
     prop.NewValue[nc] = coef.L_LeftCoef[nc] * prop.Old[nc - 2] + coef.LeftCoef[nc] * prop.Old[nc - 1] + coef.CenterCoef[nc] * prop.Old[nc] + coef.RigthCoef[nc] * prop.Boundary.RightValue
 
 
+# Implicit transport solves a tridiagonal system; known boundary values move to the right-hand side.
 def _imp_transport(prop: PropertyState, coef: EquationCoef, nc: int) -> None:
     for i in range(1, nc + 1):
         prop.Old[i] = prop.NewValue[i]
@@ -212,6 +231,7 @@ def _imp_transport(prop: PropertyState, coef: EquationCoef, nc: int) -> None:
         prop.NewValue[i] = (coef.TiCoef[i] - coef.RigthCoef[i] * prop.NewValue[i + 1]) / coef.CenterCoef[i]
 
 
+# The semi-implicit step averages old and new transport contributions, then solves the tridiagonal system.
 def _semi_imp_transport(prop: PropertyState, coef: EquationCoef, nc: int) -> None:
     for i in range(1, nc + 1):
         prop.Old[i] = prop.NewValue[i]
@@ -237,6 +257,7 @@ def _semi_imp_transport(prop: PropertyState, coef: EquationCoef, nc: int) -> Non
         prop.NewValue[i] = (coef.TiCoef[i] - coef.RigthCoef[i] * prop.NewValue[i + 1]) / coef.CenterCoef[i]
 
 
+# The implicit QUICK stencil spans five diagonals; eliminate the outer diagonals before back substitution.
 def _imp_quick_transport(prop: PropertyState, coef: EquationCoef, nc: int, ctrl: Controls) -> None:
     for i in range(1, nc + 1):
         prop.Old[i] = prop.NewValue[i]
@@ -290,6 +311,7 @@ def _imp_quick_transport(prop: PropertyState, coef: EquationCoef, nc: int, ctrl:
         prop.NewValue[i] = (coef.TiCoef[i] - coef.RigthCoef[i] * prop.NewValue[i + 1] - coef.R_RigthCoef[i] * prop.NewValue[i + 2]) / coef.CenterCoef[i]
 
 
+# Crank-Nicolson QUICK puts half the stencil on each side of the equation.
 def _semi_imp_quick_transport(prop: PropertyState, coef: EquationCoef, nc: int, ctrl: Controls) -> None:
     for i in range(1, nc + 1):
         prop.Old[i] = max(prop.NewValue[i], prop.minimum)

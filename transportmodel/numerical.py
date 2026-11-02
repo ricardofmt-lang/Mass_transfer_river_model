@@ -13,6 +13,7 @@ from .transport import coef_transport, transport, zero_coeffs
 from .workbook import PROPERTIES
 
 
+# A stage, property, step, time, and cell identify where a calculation failed.
 class SimulationError(RuntimeError):
     """A failed model calculation with its position in the time loop.
 
@@ -42,6 +43,7 @@ class SimulationError(RuntimeError):
         super().__init__(f"{where} failed: {detail}")
 
 
+# Recover the one-based loop index from a model frame when the low-level exception lacks it.
 def _cell_in_traceback(exc: Exception, cell_count: int) -> int | None:
     """Recover a model cell from a failed one-based calculation loop."""
     if cell_count <= 0:
@@ -60,6 +62,7 @@ def _cell_in_traceback(exc: Exception, cell_count: int) -> int | None:
     return cell
 
 
+# Translate arithmetic failures into actionable reports without discarding their original cause.
 def _simulation_error(
     exc: Exception, *, stage: str, property_name: str | None,
     step: int | None, time_seconds: float | None, cell_count: int,
@@ -110,6 +113,7 @@ def _simulation_error(
 
 
 @dataclass
+# Only printed time slices are retained, matching the workbook's output sheets.
 class SimulationResult:
     """Values from rows 26 onward, with coordinates from row 23 of Excel."""
 
@@ -118,6 +122,7 @@ class SimulationResult:
     values: dict[str, list[list[float]]] = field(default_factory=dict)
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
+    # Export plain Python containers so results can be serialized to JSON.
     def as_dict(self) -> dict[str, Any]:
         return {
             "time_seconds": self.time_seconds,
@@ -127,6 +132,7 @@ class SimulationResult:
         }
 
 
+# This is the executable experiment: initialize, print t=0, advance the macro's process sequence, then print thresholds.
 def run_model(config: dict[str, Any], *, max_cells_times_steps: int | None = None) -> SimulationResult:
     """Run the exact Channel sequence with the same print-time threshold.
 
@@ -149,6 +155,7 @@ def run_model(config: dict[str, Any], *, max_cells_times_steps: int | None = Non
         ) from exc
     if max_cells_times_steps is not None and gr.NC * steps > max_cells_times_steps:
         raise ValueError("This run is too large for the local app; reduce cells or duration")
+    # The cell coordinates are fixed; rows are appended only at print times.
     result = SimulationResult(coordinates_m=gr.xc[1:])
     active = [name for name in PROPERTIES if getattr(pr, name).Active]
     result.values = {name: [] for name in active}
@@ -157,6 +164,7 @@ def run_model(config: dict[str, Any], *, max_cells_times_steps: int | None = Non
         result.values["IntegratedAeroResp(kg)"] = []
         result.values["IntegratedAnaeroResp(kg)"] = []
 
+    # Snapshot arrays with copy: later in-place updates must not rewrite previous output rows.
     def print_values() -> None:
         result.time_seconds.append(ctrl.T)
         for name in active:
@@ -178,6 +186,7 @@ def run_model(config: dict[str, Any], *, max_cells_times_steps: int | None = Non
 
     step = 0
 
+    # Attach the current stage and position to errors raised by any individual model operation.
     def execute(stage: str, property_name: str | None, action: Any, *args: Any) -> Any:
         try:
             return action(*args)
@@ -187,11 +196,15 @@ def run_model(config: dict[str, Any], *, max_cells_times_steps: int | None = Non
                 time_seconds=ctrl.T, cell_count=gr.NC,
             ) from exc
 
+    # The macro checks the stopping condition before incrementing time. Its
+    # final step can therefore pass the requested simulation duration.
     while ctrl.T < ctrl.SimulationDuration:
         step += 1
         ctrl.T += ctrl.dt
         ctrl.timedays = ctrl.T / 86400
         execute("Transport coefficient reset", None, zero_coeffs, coef, gr)
+        # Lateral mixing happens before the shared longitudinal stencil is
+        # applied. This executed order differs from the PDF's illustrative table.
         for name in PROPERTIES:
             prop = getattr(pr, name)
             if prop.Active and prop.Boundary.PropDischarges.DischargesActive:
@@ -207,12 +220,16 @@ def run_model(config: dict[str, Any], *, max_cells_times_steps: int | None = Non
                         exc, stage="Cyclic boundary update", property_name=name,
                         step=step, time_seconds=ctrl.T, cell_count=gr.NC,
                     ) from exc
+        # One set of coefficients serves every active property because geometry,
+        # velocity, diffusivity, and time step are common to the river reach.
         execute("Transport coefficient calculation", None,
                 coef_transport, flow, gr.NC, ctrl, coef)
         for name in PROPERTIES:
             prop = getattr(pr, name)
             if prop.Active:
                 execute("Transport", name, transport, prop, coef, gr.NC, ctrl)
+        # Surface exchanges and reactions are operator-split after transport.
+        # Each process observes any NewValue changes made by earlier processes.
         if pr.Temperature.Active and pr.Temperature.Boundary.FreeSurfaceFlux:
             execute("Surface heat exchange", "Temperature", ExpFreeSurfaceHeatFluxes,
                     pr.Temperature, gr, ctrl, atm)
@@ -231,6 +248,8 @@ def run_model(config: dict[str, Any], *, max_cells_times_steps: int | None = Non
             else:
                 execute("Generic growth or decay", "Generic", ImpTypeSinksGeneric,
                         pr.Generic, gr.NC, ctrl)
+        # Print the first completed step meeting each threshold, not an
+        # interpolated value at the exact requested output time.
         if ctrl.T >= ctrl.printtime:
             execute("Output table", None, print_values)
             if ctrl.PrintLine >= 32767:

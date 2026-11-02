@@ -23,6 +23,7 @@ DISCHARGE_LABELS = {
 }
 
 
+# VBA searches exact keywords in the first 50 rows; punctuation and spaces matter.
 def _labels(sheet: Any, limit: int = 50) -> dict[str, int]:
     labels: dict[str, int] = {}
     for row in range(1, limit + 1):
@@ -32,12 +33,14 @@ def _labels(sheet: Any, limit: int = 50) -> dict[str, int]:
     return labels
 
 
+# Read the cell next to a recognized keyword, preserving whether the keyword existed.
 def _cell(sheet: Any, labels: dict[str, int], label: str, column: int = 2,
           default: Any = None) -> Any:
     row = labels.get(label)
     return sheet.cell(row, column).value if row is not None else default
 
 
+# Workbook lists extend rightward until the first empty cell.
 def _column_values(sheet: Any, row: int | None, start: int = 2) -> list[Any]:
     if row is None:
         return []
@@ -50,6 +53,7 @@ def _column_values(sheet: Any, row: int | None, start: int = 2) -> list[Any]:
     return values
 
 
+# Graph selector rows can contain intentional gaps that affect macro behavior.
 def _graph_values(sheet: Any, row: int | None) -> list[Any]:
     """Excel counts to the rightmost nonblank, retaining gaps as zero inputs."""
     if row is None:
@@ -59,16 +63,19 @@ def _graph_values(sheet: Any, row: int | None) -> list[Any]:
     return [sheet.cell(row, col).value for col in range(3, last + 1)]
 
 
+# Normalize Excel numeric values for JSON without changing their magnitude.
 def _number(value: Any, default: float = 0.0) -> float:
     if value is None or value == "":
         return default
     return float(value)
 
 
+# Match the workbook's accepted Boolean text rather than Python truthiness.
 def _yes(value: Any, *, short: bool = False) -> bool:
     return value in (("YES", "Yes", "yes", "Y", "y") if short else ("YES", "Yes", "yes"))
 
 
+# Extract one property sheet into the app's normalized input structure.
 def _read_property(sheet: Any, cells: int) -> dict[str, Any]:
     labels = _labels(sheet)
     get = lambda label, default=None: _cell(sheet, labels, label, default=default)
@@ -137,6 +144,7 @@ def _read_property(sheet: Any, cells: int) -> dict[str, Any]:
     }
 
 
+# This optional reference reader extracts inputs; the hosted app never opens Excel.
 def read_workbook(path: str | Path) -> dict[str, Any]:
     """Extract every numerical input used by ``Channel`` from an XLSM copy.
 
@@ -152,8 +160,10 @@ def read_workbook(path: str | Path) -> dict[str, Any]:
     try:
         sheets = {name: wb[name] for name in ("Main", "River", "Atmosphere", "Discharges", "Graph", *PROPERTIES)}
         labels = {name: _labels(sheet, 20 if name == "Main" else 50) for name, sheet in sheets.items()}
+        # Read a labelled value from the currently selected worksheet.
         def val(name: str, label: str, col: int = 2, default: Any = None) -> Any:
             return _cell(sheets[name], labels[name], label, col, default)
+        # Some workbook formulas have cached numeric results needed for exact input capture.
         def cached(name: str, label: str) -> Any:
             nonlocal cache
             if cache is None:

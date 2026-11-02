@@ -47,6 +47,7 @@ EXAMPLE_PATHS = (
 )
 
 
+# Use the full available width for editors whose table columns would otherwise be clipped.
 def _wide(widget: Any) -> dict[str, Any]:
     """Use the current Streamlit width API while retaining 1.40 compatibility."""
     if "width" in inspect.signature(widget).parameters:
@@ -54,6 +55,7 @@ def _wide(widget: Any) -> dict[str, Any]:
     return {"use_container_width": True}
 
 
+# A blank editor is represented by None values, not by scientific defaults.
 def blank_config() -> dict[str, Any]:
     """A complete editable schema with no numerical values pre-entered."""
     property_blank = {
@@ -151,6 +153,7 @@ def blank_config() -> dict[str, Any]:
     }
 
 
+# Saved JSON can omit fields; recursively merge it onto the complete editor schema.
 def _merge(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
     """Preserve any workbook metadata while filling absent schema fields."""
     result = deepcopy(base)
@@ -162,6 +165,7 @@ def _merge(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+# Convert NumPy and pandas values to JSON-safe Python scalars before downloads.
 def _native(value: Any) -> Any:
     """Convert pandas/NumPy editor values into JSON-safe Python values."""
     if value is None or value is pd.NA:
@@ -177,6 +181,7 @@ def _native(value: Any) -> Any:
     return value
 
 
+# Turn the data editor's frame back into the row dictionaries consumed by the model.
 def _records(frame: pd.DataFrame, columns: list[str]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for row in frame.to_dict("records"):
@@ -186,6 +191,7 @@ def _records(frame: pd.DataFrame, columns: list[str]) -> list[dict[str, Any]]:
     return records
 
 
+# Widget keys include a generation number so loading or clearing inputs resets stale widget state.
 def _ui_key(base: str) -> str:
     """Give each loaded input set distinct widget identities in a live browser.
 
@@ -197,6 +203,7 @@ def _ui_key(base: str) -> str:
     return base if generation == 0 else f"{base}__{generation}"
 
 
+# Display an empty numeric control until the learner supplies a value.
 def _number(
     label: str,
     value: Any,
@@ -222,17 +229,20 @@ def _number(
     )
 
 
+# Keep the choice unset when the corresponding workbook input is blank.
 def _select(label: str, options: list[str], value: Any, key: str) -> str | None:
     index = options.index(str(value)) if str(value) in options else None
     return st.selectbox(label, options, index=index, placeholder="Choose an option", key=_ui_key(f"ui_{key}"))
 
 
+# Increment the widget generation after a new configuration replaces the current one.
 def _clear_widgets() -> None:
     for key in list(st.session_state):
         if key.startswith("result_"):
             del st.session_state[key]
 
 
+# Store input values in Streamlit session state, then force a fresh widget generation.
 def _load_config(payload: dict[str, Any]) -> None:
     config = payload.get("config", payload)
     if not isinstance(config, dict):
@@ -245,6 +255,7 @@ def _load_config(payload: dict[str, Any]) -> None:
     st.session_state["input_generation"] = st.session_state.get("input_generation", 0) + 1
 
 
+# The bundled JSON preset demonstrates the workbook input format without opening Excel.
 def _example_payload() -> dict[str, Any]:
     for path in EXAMPLE_PATHS:
         if path.is_file():
@@ -252,6 +263,7 @@ def _example_payload() -> dict[str, Any]:
     raise FileNotFoundError("No bundled river example JSON was found")
 
 
+# The top controls load, clear, and download model inputs; no workbook upload is required.
 def _toolbar() -> None:
     st.title("River transport model")
     st.caption("Local Python replica of the Channel transport workbook")
@@ -281,6 +293,7 @@ def _toolbar() -> None:
             st.rerun()
 
 
+# Time step, duration, output cadence, and numerical schemes determine the experiment.
 def _main_controls(config: dict[str, Any]) -> None:
     data = config["main"]
     st.subheader("Simulation controls")
@@ -328,6 +341,7 @@ def _main_controls(config: dict[str, Any]) -> None:
                 )
 
 
+# Geometry fixes cell size and volume; velocity and dispersion set transport strength.
 def _river(config: dict[str, Any]) -> None:
     data = config["river"]
     st.subheader("River geometry and flow")
@@ -391,6 +405,7 @@ def _river(config: dict[str, Any]) -> None:
         )
 
 
+# Each row gives a temperature and two gas solubility constants for interpolation.
 def _henry_editor(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     frame = pd.DataFrame(rows, columns=["temperature_c", "o2", "co2"])
     edited = st.data_editor(
@@ -408,6 +423,7 @@ def _henry_editor(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return _records(edited, ["temperature_c", "o2", "co2"])
 
 
+# Show atmospheric fields only when the chosen processes need them.
 def _atmosphere(config: dict[str, Any]) -> None:
     data = config["atmosphere"]
     st.subheader("Atmosphere")
@@ -496,6 +512,7 @@ def _atmosphere(config: dict[str, Any]) -> None:
         )
 
 
+# Each lateral inflow has a position and flow rate; property-specific values are edited later.
 def _discharge_editor(config: dict[str, Any]) -> None:
     st.subheader("Continuous lateral discharges")
     config["discharge_cells_label_present"] = _select(
@@ -543,6 +560,7 @@ def _discharge_editor(config: dict[str, Any]) -> None:
         config["discharge_property_labels_present"] = labels
 
 
+# One property editor combines activation, boundary values, initialization, and source terms.
 def _property_editor(name: str, config: dict[str, Any]) -> None:
     data = config["properties"][name]
     st.subheader(f"{name} property")
@@ -728,6 +746,7 @@ def _property_editor(name: str, config: dict[str, Any]) -> None:
             )
 
 
+# Workbook-style selectors choose plotted cells, times, and properties independently of the solver.
 def _graph_editor(config: dict[str, Any]) -> None:
     graph = config["graph"]
     st.subheader("Graph selections")
@@ -779,6 +798,7 @@ def _graph_editor(config: dict[str, Any]) -> None:
             graph["sheet_order"] = [line.strip() for line in text.splitlines() if line.strip()]
 
 
+# Create a labelled table from the printed time slices and physical cell coordinates.
 def _result_table(result: SimulationResult, name: str) -> pd.DataFrame:
     columns = {"Time (s)": result.time_seconds,
                "Time (days)": [time / 86400 for time in result.time_seconds]}
@@ -787,6 +807,7 @@ def _result_table(result: SimulationResult, name: str) -> pd.DataFrame:
     return pd.DataFrame(columns)
 
 
+# Profiles, time series, and the space-time map reuse the same numerical result.
 def _simple_plots(result: SimulationResult, name: str) -> None:
     values = result.values[name]
     days = [time / 86400 for time in result.time_seconds]
@@ -836,6 +857,7 @@ def _simple_plots(result: SimulationResult, name: str) -> None:
         st.plotly_chart(fig, **_wide(st.plotly_chart))
 
 
+# Recreate workbook chart layouts using current Python arrays, never stale Excel cells.
 def _macro_charts(result: SimulationResult, config: dict[str, Any]) -> None:
     st.caption("These charts use only the current Python simulation; Excel is not required.")
     try:
@@ -868,6 +890,7 @@ def _macro_charts(result: SimulationResult, config: dict[str, Any]) -> None:
         st.json(chart)
 
 
+# The channel has the entered width and depth; color is uniform across each one-dimensional cell.
 def _river_3d(result: SimulationResult, name: str, config: dict[str, Any]) -> None:
     river = config["river"]
     units = "kg" if name.startswith("Integrated") else (config.get("properties", {}).get(name) or {}).get("units")
@@ -891,6 +914,7 @@ def _river_3d(result: SimulationResult, name: str, config: dict[str, Any]) -> No
     )
 
 
+# Keep numerical tables and all visualizations adjacent so students can compare representations.
 def _results(result: SimulationResult, config: dict[str, Any]) -> None:
     st.header("Results")
     st.caption("Showing the last completed simulation.")
@@ -934,6 +958,7 @@ def _results(result: SimulationResult, config: dict[str, Any]) -> None:
     )
 
 
+# Translate calculation failures into a physical stage, likely cause, and suggested input checks.
 def _simulation_error_report(exc: Exception) -> dict[str, str]:
     """Turn a solver failure into a readable, persistent Streamlit report."""
     original_type = str(getattr(exc, "original_type", type(exc).__name__))
@@ -992,6 +1017,7 @@ def _simulation_error_report(exc: Exception) -> dict[str, str]:
     }
 
 
+# Present the teaching-oriented explanation first and preserve technical details for diagnosis.
 def _show_simulation_error(report: dict[str, str]) -> None:
     st.error(f"Simulation stopped: {report['summary']}")
     st.write(f"**What failed:** {report['detail']}")
@@ -1002,6 +1028,7 @@ def _show_simulation_error(report: dict[str, str]) -> None:
         st.code(report["technical"], language="text")
 
 
+# Streamlit reruns this function after every interaction; session state preserves inputs and last result.
 def main() -> None:
     st.set_page_config(page_title="River transport model", layout="wide")
     if "base_config" not in st.session_state:

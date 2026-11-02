@@ -15,6 +15,7 @@ class ModelInputError(ValueError):
     """An input cannot be run by the workbook's Channel macro."""
 
 
+# Convert an Excel-like cell value to a finite Double while preserving blank-as-zero behavior.
 def _float(value: Any, label: str) -> float:
     # Excel's empty B-cell is an Empty Variant, coerced to zero when assigned
     # to a VBA Double. Label-presence validation is separate from its value.
@@ -29,6 +30,7 @@ def _float(value: Any, label: str) -> float:
     return result
 
 
+# VBA Integer conversion rounds half values to even and has a signed 16-bit range.
 def _int(value: Any, label: str) -> int:
     number = _float(value, label)
     # Assignment to a VBA Integer rounds halves to even (CInt semantics).
@@ -38,11 +40,15 @@ def _int(value: Any, label: str) -> int:
     return result
 
 
+# Use the macro's default only when the input cell is absent or blank.
 def _optional_float(value: Any, default: float = 0.0) -> float:
     return default if value is None or value == "" else _float(value, "input")
 
 
+# Convert days to seconds once, then validate the selected time and space schemes.
 def build_controls(data: dict[str, Any]) -> Controls:
+    # Entered duration is in days; the numerical clock and source rates use
+    # seconds, so convert before the time loop begins.
     c = Controls()
     c.dt = _float(data.get("time_step_seconds"), "Time step")
     c.SimulationDuration = _float(data.get("simulation_duration_days"), "Duration") * 24 * 3600
@@ -78,7 +84,9 @@ def build_controls(data: dict[str, Any]) -> Controls:
     return c
 
 
+# The one-dimensional finite-volume grid has NC equal cells, centred at (i - 0.5) dx.
 def build_grid(data: dict[str, Any]) -> Grid:
+    # Values live at cell centres: x_i = (i - 0.5) * dx.
     g = Grid()
     g.Length = _float(data.get("length_m"), "Channel length")
     g.NC = _int(data.get("cells"), "Number of cells")
@@ -95,6 +103,7 @@ def build_grid(data: dict[str, Any]) -> Grid:
     return g
 
 
+# Calculate velocity from flow rate when requested; otherwise keep the entered velocity.
 def build_flow(data: dict[str, Any], gr: Grid, ctrl: Controls) -> FlowProperties:
     f = FlowProperties()
     if data.get("velocity_mode") == "flow_formula":
@@ -113,7 +122,10 @@ def build_flow(data: dict[str, Any], gr: Grid, ctrl: Controls) -> FlowProperties
     return f
 
 
+# Fill every cell with its baseline first, then overwrite CELL or INTERVAL selections.
 def _initialise(prop: PropertyState, init: dict[str, Any], gr: Grid) -> None:
+    # CELL and INTERVAL are overrides of the baseline rather than zero-filled
+    # sparse fields; unspecified cells retain the default concentration.
     default_cell = init.get("default_cell_value")
     initial_value = (_optional_float(default_cell) if init.get("default_cell_label_present", default_cell is not None)
                      else prop.Default)
@@ -176,6 +188,7 @@ def _initialise(prop: PropertyState, init: dict[str, Any], gr: Grid) -> None:
     raise ModelInputError(f"{prop.SheetName}: unknown initialization method {kind}")
 
 
+# Attach only the lateral sources belonging to this property, using one-based cell indices.
 def _discharges_for(name: str, config: dict[str, Any], gr: Grid) -> DischargesList:
     result = DischargesList()
     rows = []
@@ -204,6 +217,7 @@ def _discharges_for(name: str, config: dict[str, Any], gr: Grid) -> DischargesLi
     return result
 
 
+# Translate one editor property into the VBA-shaped mutable arrays and boundary record.
 def build_property(name: str, data: dict[str, Any], config: dict[str, Any],
                    gr: Grid, ctrl: Controls) -> PropertyState:
     p = PropertyState()
@@ -267,6 +281,7 @@ def build_property(name: str, data: dict[str, Any], config: dict[str, Any],
     return p
 
 
+# The gas tables are copied into active property boundaries, as in CreateAtmosphere.
 def build_atmosphere(data: dict[str, Any], pr: PropertiesList) -> Atmosphere:
     atm = Atmosphere()
     atm.Temperature = _float(data.get("air_temperature_c"), "Air temperature")
@@ -327,6 +342,7 @@ def build_atmosphere(data: dict[str, Any], pr: PropertiesList) -> Atmosphere:
     return atm
 
 
+# Initialization order matters: controls, grid, flow, coefficients, properties, then atmosphere.
 def build_state(config: dict[str, Any]) -> tuple[Controls, Grid, FlowProperties,
                                                  PropertiesList, Atmosphere, EquationCoef]:
     """Reproduce the ``Channel`` initialization call sequence."""
