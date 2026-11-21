@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
@@ -14,8 +15,9 @@ from docx.shared import Inches, Pt, RGBColor
 
 ROOT = Path(__file__).resolve().parent
 SHOTS = ROOT / "screenshots"
-OUTPUT = ROOT / "River_Transport_Model_Student_Guide.docx"
-ACCENT = RGBColor(190, 49, 62)
+OUTPUT = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "River_Transport_Model_Student_Guide.docx"
+sys.path.insert(0, str(ROOT.parent))
+from transportmodel.presets import teaching_cases
 
 
 def shade(cell, fill: str) -> None:
@@ -103,18 +105,34 @@ def steps(items: list[str]) -> None:
         paragraph.add_run(item)
 
 
-def table(headers: list[str], rows: list[list[str]]) -> None:
+def table(headers: list[str], rows: list[list[str]], widths: tuple[float, ...] | None = None) -> None:
     result = doc.add_table(rows=1, cols=len(headers))
     result.alignment = WD_TABLE_ALIGNMENT.CENTER
     result.style = "Light Shading Accent 1"
+    if widths:
+        result.autofit = False
+        for column, width in zip(result.columns, widths):
+            column.width = Inches(width)
+    result.rows[0]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
     for cell, value in zip(result.rows[0].cells, headers):
         cell.text = value
         shade(cell, "DDE5EC")
+        cell.paragraphs[0].paragraph_format.keep_with_next = True
         for run in cell.paragraphs[0].runs:
             run.bold = True
     for row in rows:
         for cell, value in zip(result.add_row().cells, row):
             cell.text = value
+    for row in result.rows:
+        row._tr.get_or_add_trPr().append(OxmlElement("w:cantSplit"))
+        if widths:
+            for cell, width in zip(row.cells, widths):
+                cell.width = Inches(width)
+                for paragraph in cell.paragraphs:
+                    paragraph.paragraph_format.space_after = Pt(2)
+                    paragraph.paragraph_format.line_spacing = 1.02
+                    for run in paragraph.runs:
+                        run.font.size = Pt(9.5)
     doc.add_paragraph()
 
 
@@ -123,7 +141,9 @@ def figure(name: str, caption: str, focus: str) -> None:
     if not path.exists():
         raise FileNotFoundError(path)
     picture_paragraph = doc.add_paragraph()
-    picture_paragraph.add_run().add_picture(str(path), width=Inches(6.8))
+    picture_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    image = picture_paragraph.add_run().add_picture(str(path), width=Inches(6.65))
+    image._inline.docPr.set("descr", caption + " " + focus)
     picture_paragraph.paragraph_format.keep_with_next = True
     paragraph = doc.add_paragraph(style="Caption")
     paragraph.add_run(caption).bold = True
@@ -146,7 +166,7 @@ def code(text: str, explanation: str) -> None:
 
 doc.add_paragraph("River Transport Model Student Guide", style="Title")
 p("Code, numerical methods, and a step by step guide to the Streamlit app")
-p("For students of energy and mass transfer  |  2 November 2026")
+p("For students of energy and mass transfer  |  21 November 2026")
 p("This handbook explains the one dimensional river model from input to result. It follows the executed Python port of the Channel VBA macro. Work through the app tutorial first, then use the code chapters to connect each control to an equation and a program step. The app runs without Excel.")
 p("Live app: https://ist-river-transport.streamlit.app/")
 p("Source code: https://github.com/ricardofmt-lang/Mass_transfer_river_model")
@@ -160,20 +180,20 @@ bullets([
 ])
 h("Model boundary and scope", 1)
 p("Every river cell represents a whole vertical cross section. Width and depth affect flow, mixing volume, and surface exchange, but each property has only one value per cell. The 3D view gives those 1D values a channel shape; it does not calculate vertical or cross river gradients.")
-p("The code deliberately matches the executed macro even where the theory PDF has a typo or a different formula. The final chapter identifies the main differences that matter when reading both together.")
+p("The calculation follows the executed Channel macro. The revised theoretical notes explain its implemented equations. The closing catalogue identifies the teaching cases by lecture and shows which result to examine.")
 
 doc.add_page_break()
 h("Part 1 Using the app", 1)
 h("A first complete run", 2)
 steps([
-    "Open the live app. It starts with empty numerical fields so the source of every value is clear.",
-    "Select Load workbook example. This fills a short 20 cell demonstration and is the quickest way to learn the workflow.",
+    "Open the app. For a local run, use run.cmd and open the address it prints. The editor starts with blank numerical inputs.",
+    "In Teaching cases, choose Getting started and Workbook example, then select Load case. This fills a short 20-cell demonstration.",
     "Read Controls, River, Atmosphere, Discharges, Properties, and Graphs from left to right. Change one value at a time during your first experiments.",
     "Select Run simulation. The Results section appears below the input tabs.",
     "Choose a property, compare its numerical table with a profile and time series, and then open the 3D river animation.",
-    "Download saved inputs JSON to reproduce the same case later. Export a result table as CSV or all results as JSON when needed.",
+    "Save the configuration with Download saved inputs JSON. To reopen it, expand Open saved inputs or clear the editor, upload the file and select Apply JSON inputs.",
 ])
-figure("01_controls_blank.jpg", "Figure 1  Empty starting state.", "Focus on the blank duration, time step, and output interval. Loading a preset fills them, but a new study should document its own chosen values.")
+figure("01_controls_blank.jpg", "Figure 1  Empty starting state.", "Select a topic and case at the top of the app. The duration, time step and output interval stay empty until you load a case or enter values.")
 figure("02_controls_example.jpg", "Figure 2  Example controls.", "The example uses 0.005 day, a 60 second step, a 120 second output interval, semi implicit transport, diffusion on, and advection off.")
 
 h("Controls and numerical resolution", 2)
@@ -188,16 +208,17 @@ table(["Input", "Meaning", "How to interpret it"], [
 p("For equal cells, dx = length / number of cells. Cr = velocity × dt / dx and D = diffusivity × dt / dx² when the respective process is enabled. The app rounds diagnostic numbers to two decimals: a displayed 0.0 can mean a small nonzero value. In the example, dx = 500 m and D = 4 × 60 / 500² = 0.00096, which displays as 0.0.")
 
 h("River geometry and flow", 2)
-figure("03_river.jpg", "Figure 3  River input tab.", "Length and cell count determine dx; width and depth determine cross sectional area. The flow selector either computes velocity from Q/(width × depth) or accepts an entered velocity.")
+figure("03_river.jpg", "Figure 3  River input tab.", "The River tab shows cell length and the resulting velocity and flow rate. Choose an entered velocity, conversion from flow rate, or a Manning estimate.")
 table(["Input", "Role in calculation", "Student check"], [
     ["Length and cells", "Fix the one dimensional grid and cell centre positions.", "Cell 1 is centred at dx/2, not at x = 0."],
     ["Width and depth", "Set cell volume and exchange area; depth also enters gas exchange.", "A deeper channel dilutes the same lateral load more."],
-    ["Flow rate or velocity", "Set mean longitudinal velocity.", "Sign controls which end is upstream; zero removes advective transport."],
+    ["Flow velocity", "Sets the mean longitudinal velocity used for advection.", "The sign determines the upstream end."],
     ["Diffusivity", "Sets longitudinal mixing in m²/s.", "The standard option uses 0.1 × abs(velocity) × width."],
-    ["Slope", "Used in the macro gas exchange correlation.", "The app preserves the spreadsheet input convention."],
-    ["Manning coefficient", "Retained from the workbook input.", "It is not used by this transport solver; no hydraulic model is coupled here."],
+    ["Slope", "Sets the slope in gas exchange and in the selected Manning estimate.", "Enter percent. Multiply an m/m slope by 100."],
+    ["Manning coefficient", "Specifies channel roughness in Manning mode.", "Compare velocities at different roughness values with the same geometry and slope."],
 ])
 
+p("In Manning mode, enter the roughness coefficient and slope in percent. For example, a slope of 0.0001 m/m is 0.01%. The estimate uses hydraulic radius R = width × depth / (width + 2 × depth) for a rectangular channel.")
 h("Atmospheric forcing and solubility", 2)
 figure("04_atmosphere.jpg", "Figure 4  Atmosphere tab.", "Air temperature, wind, humidity, sun, and sky settings drive heat exchange. Gas pressures and the Henry table appear farther down the same tab.")
 p("Solar forcing follows a daylight sine between sunrise and sunset, reduced by latitude, atmospheric absorption, and cloud cover. Sensible heat responds to the air water temperature difference. Latent heat responds to vapour pressure and humidity. Long wave radiation uses an imposed sky temperature or the macro correlation. These processes run only when atmospheric heat exchange is enabled for Temperature.")
@@ -220,9 +241,10 @@ table(["Property", "What it represents", "Coupling or important controls"], [
 p("Left and right boundary values describe water entering from either end. Positive velocity enters from the left; negative velocity enters from the right. The cyclic option is implemented for Temperature in the macro and should be interpreted as that specific code behavior, not a generic periodic boundary for every property.")
 p("DEFAULT applies a background value everywhere. CELL first fills the background, then overrides named cells. INTERVAL first fills the background, then overrides ranges. Cells not listed remain at the background value. Minimum and maximum fields follow the macro's property rules; do not assume every field is a universal post processing clamp.")
 
+p("For a conservative Generic tracer, enter zero with Day-1 or enter 1 with RT. A negative Day-1 rate gives decay. T90, half-life and doubling time expect positive durations. In BOD, a zero logistic maximum skips the logistic step for nonnegative values while leaving oxidation active.")
 h("Graph selections", 2)
 figure("08_graph_selectors.jpg", "Figure 8  Workbook graph selectors.", "Time series selectors identify cell numbers. Profile selectors identify percentages of the printed run. Use standard graph selection to populate a teaching example.")
-p("These selectors control workbook style chart output. They do not change the numerical solution. If you want to inspect any printed time freely, use the interactive profile slider in Results.")
+p("These selectors update Workbook graphs for the last completed run. Use Output snapshot in the interactive profile to inspect an individual saved time. When you change a simulation input, the app tells you to rerun before interpreting the results.")
 
 doc.add_page_break()
 h("Part 2 Reading and exporting results", 1)
@@ -234,11 +256,12 @@ h("Profiles and time series", 2)
 figure("11_profile_temperature.jpg", "Figure 10  Temperature profile.", "A longitudinal profile fixes a printed time and shows the value at each cell centre. The cold interval in this example remains visible after diffusion.")
 p("A cell time series instead fixes a position and shows the saved values through time. A space time map puts position on one axis, printed time on the other, and uses color for the selected property. Compare all three views before drawing conclusions about movement or spreading.")
 h("Animated 3D channel", 2)
-figure("12_3d_fullscreen.jpg", "Figure 11  Full screen 3D river.", "The channel height is the entered 0.5 m depth and its width is 5 m. Use the play button or time slider; the fixed color scale lets you compare frames.")
-p("The river is shortened visually relative to its cross section so its faces remain visible. Hover and axis positions retain the actual entered dimensions. A whole cross section shares one color: the model has no variation across width or depth.")
+figure("12_3d_fullscreen.jpg", "Figure 11  3D river and GIF export.", "The channel height is the entered 0.5 m depth and its width is 5 m. Play or scrub through the saved times. Download 3D GIF records the selected property from the first to the last saved time.")
+p("Rotate or zoom the channel before export to choose the camera angle. The GIF uses the same frames, playback speed and fixed color scale as Play. A whole cross-section shares one color. The length is compressed visually, and the axes and hover readouts retain the model’s dimensions.")
 h("Workbook style graphs and diagnostics", 2)
 figure("13_workbook_graph.jpg", "Figure 12  Workbook style chart.", "These charts use the current Python run rather than old Excel worksheet data. Select a chart above the plot and inspect its series data if needed.")
 p("Courant number compares travel in one time step with cell length. Diffusion number compares longitudinal spreading with cell length squared. Grid Reynolds number is Cr/D when D is positive. Residence time estimates travel time from length or cell size and mean velocity; the macro adds a small denominator offset, so treat extreme zero velocity cases cautiously.")
+p("The app flags explicit upwind and central settings that exceed the applicable stability or monotonicity limits. Finite results remain visible so you can inspect the oscillations. Try Unstable explicit central pulse, then compare it with Bounded oscillations with implicit central.")
 h("When a simulation fails", 2)
 steps([
     "Read the named calculation stage, property, time step, and cell in the error panel.",
@@ -263,6 +286,7 @@ table(["Module", "Responsibility", "Read it after"], [
 ])
 p("The central flow is editor fields -> JSON shaped configuration -> build_state -> mutable model arrays -> run_model -> SimulationResult -> tables and charts. The hosted app needs neither the original workbook nor Excel.")
 
+p("presets.py supplies the teaching inputs through the same configuration path as saved JSON. animation_download.py loads the browser exporter, which reads the Plotly frames and encodes the selected property as a GIF.")
 h("One based state and cell geometry", 2)
 code("""def zeros(n: int) -> list[float]:
     return [0.0] * (n + 1)
@@ -341,15 +365,14 @@ p("A SimulationError attaches stage, property, step, time, and cell to the origi
 
 h("Evidence that the port matches the workbook", 2)
 p("The test suite checks every printed cell in 89 recorded Excel cases, including coupled and extreme settings, and also compares the saved 1,000 cell workbook run. Chart tests compare series data for cases calculated by both systems. Floating point parity uses a relative tolerance of 1e-14 or absolute tolerance of 1e-12 to allow the last binary rounding bits to differ. The standalone test runs the app without the XLSM.")
-p("To repeat the tests locally, install requirements.txt and requirements-dev.txt, then run: python -m pytest -q. The documented code comments were checked against the previous Python AST to confirm that they changed no executable behavior; all 316 tests passed.")
+p("Install requirements.txt and requirements-dev.txt, then run python -m pytest -q. The test suite also runs the teaching presets, checks selected analytical and numerical comparisons, and exercises the Streamlit case loader.")
 
-h("Reading the theory PDF critically", 2)
+h("Reading the revised theoretical notes", 2)
 bullets([
-    "The executed gas exchange uses wind plus 0.1, slope plus 0.00001, division by depth, and an oversaturation enhancement. The PDF's temperature multiplier is not called by the active routine.",
-    "The code uses a solar cloud factor 1 - 0.75 F cubed and 23 percent atmospheric absorption. Compare this with the two solar formulas printed in the PDF.",
-    "The PDF's 20 degree CO2 Henry table entry is a factor of ten below the workbook input 0.039172.",
-    "The macro applies lateral discharges before transport. The PDF's illustrative operator splitting table places them after transport.",
-    "A first CO2 equation in the PDF gives respiration a negative sign; the implemented and later 1D equation use production.",
+    "The revised notes use the workbook’s wind, slope and depth dependence for gas exchange, including the supersaturation correction.",
+    "The solar term includes 23% atmospheric absorption and the cloud factor 1 − 0.75 F³.",
+    "The printed CO₂ Henry constant at 20 °C is 0.039172 mol/(L·atm).",
+    "The time loop mixes lateral discharges before transport. Aerobic oxidation supplies CO₂ and consumes oxygen.",
 ])
 
 h("Study exercises", 2)
@@ -373,7 +396,22 @@ table(["Term", "Meaning"], [
     ["Henry constant", "Temperature dependent proportionality between gas pressure and equilibrium dissolved concentration."],
     ["Operator splitting", "Applying transport, exchange, and reaction in successive updates within a step."],
 ])
-p("End of guide. Use the repository's commented source next to this handbook when studying an individual formula or special case.")
+doc.add_page_break()
+h("Part 4 Teaching case catalogue", 1)
+p("Choose the topic, select a case, then select Load case and Run simulation. Each case opens with editable inputs. Load it again to restore its baseline. Save each changed configuration before comparing two sets of results.")
+figure("14_case_picker.jpg", "Figure 13  Selecting a lecture case.",
+       "The case description gives the lecture and the feature to look for in the results.")
+p("The lecture numbers identify the teaching material. Some slides give a plotted result and only part of the input. Those presets reconstruct the demonstration. For the six-cell numerical exercise, compare the interior values first. The workbook’s end-cell stencils differ from the ghost-cell assumptions used in the hand calculation.")
+p("In Lecture 30, the printed decimal and centimetres-per-kilometre slope values disagree. The presets use the decimals as workbook entries, reflecting the similar high-wind curves shown in the slides. The pond example in Lecture 31 uses three 200 m tanks. The two receiving-water examples interpret 50 m and 3 m as channel widths because those widths give the stated flow rates.")
+p("The model has a fixed cross-section. Exercises on shrinking water volume, vertical stratification and mechanical aeration require additional physics. The stronger pond exchange case varies wind to illustrate how an increase in atmospheric exchange affects DO.")
+figure("15_bod_timeseries.jpg", "Figure 14  Oxygen recovery in the high-wind BOD case.",
+       "Select DO, then open Interactive graphs and Cell time series. Compare the minimum and recovery with the low-wind case.")
+cases = teaching_cases()
+for topic in dict.fromkeys(case.topic for case in cases):
+    h(topic, 2)
+    table(["Case", "Lecture", "What to look for"],
+          [[case.title, case.lecture, case.focus] for case in cases if case.topic == topic],
+          widths=(2.15, 0.88, 3.72))
 
 doc.save(OUTPUT)
 print(OUTPUT)
