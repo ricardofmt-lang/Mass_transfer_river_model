@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import isfinite
 from typing import Any
 
 from .config import build_state
@@ -164,17 +165,34 @@ def run_model(config: dict[str, Any], *, max_cells_times_steps: int | None = Non
         result.values["IntegratedAeroResp(kg)"] = []
         result.values["IntegratedAnaeroResp(kg)"] = []
 
-    # Snapshot arrays with copy: later in-place updates must not rewrite previous output rows.
+    step = 0
+
+    # Copy current cell values into a snapshot before advancing the next step.
+    # Python float multiplication can silently give infinity where VBA raises
+    # overflow. Report its first affected saved time before plotting these rows.
     def print_values() -> None:
-        result.time_seconds.append(ctrl.T)
-        for name in active:
-            result.values[name].append(getattr(pr, name).NewValue[1:].copy())
+        snapshots = {name: getattr(pr, name).NewValue[1:] for name in active}
         if integrated_print:
-            result.values["IntegratedAeroResp(kg)"].append(pr.BOD.IntegratedAerobicResp[1:].copy())
-            result.values["IntegratedAnaeroResp(kg)"].append(pr.BOD.IntegratedAnaerobicResp[1:].copy())
+            snapshots["IntegratedAeroResp(kg)"] = pr.BOD.IntegratedAerobicResp[1:]
+            snapshots["IntegratedAnaeroResp(kg)"] = pr.BOD.IntegratedAnaerobicResp[1:]
+        for name, row in snapshots.items():
+            for cell, value in enumerate(row, 1):
+                if not isfinite(value):
+                    raise SimulationError(
+                        stage="Output table", property_name=name, step=step,
+                        time_seconds=ctrl.T, cell=cell,
+                        detail="The saved value exceeded the finite range of the calculation.",
+                        hint="Check this property’s inputs and the time step for numerical instability.",
+                        original_type="OverflowError", original_message=repr(value),
+                    )
+        result.time_seconds.append(ctrl.T)
+        for name, row in snapshots.items():
+            result.values[name].append(row)
 
     try:
         print_values()  # The macro always prints time zero, even for a zero-duration run.
+    except SimulationError:
+        raise
     except Exception as exc:
         raise _simulation_error(
             exc, stage="Initial output", property_name=None, step=0,
@@ -184,12 +202,12 @@ def run_model(config: dict[str, Any], *, max_cells_times_steps: int | None = Non
     ctrl.printtime += ctrl.DtPrint
     ctrl.PrintLine += 1
 
-    step = 0
-
     # Attach the current stage and position to errors raised by any individual model operation.
     def execute(stage: str, property_name: str | None, action: Any, *args: Any) -> Any:
         try:
             return action(*args)
+        except SimulationError:
+            raise
         except Exception as exc:
             raise _simulation_error(
                 exc, stage=stage, property_name=property_name, step=step,

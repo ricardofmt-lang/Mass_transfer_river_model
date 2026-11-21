@@ -27,10 +27,13 @@ Open the URL printed by `run.cmd` (normally <http://127.0.0.1:8502/>). If this
 river app is already running, the launcher reports its URL and does not start a
 second copy. If another app owns port 8502, it selects the next free local port.
 `run.cmd` works even if PowerShell script execution is disabled. The app starts
-with blank inputs. Use **Load workbook
-example** for a short, 20-cell case, or **Load saved inputs JSON** to restore
-your own inputs. The app neither uploads nor requires an Excel file. A second
-example, `examples/workbook_original_inputs.json`, captures the original
+with blank inputs. Under **Teaching cases**, pick a topic and case, then select
+**Load case**. The **Workbook example** is a short, 20-cell walkthrough. The
+other presets cover Lectures 15–32 and include matched comparisons for transport,
+surface heating, numerical schemes and water quality. Under **Open saved inputs
+or clear the editor**, use **Load saved inputs JSON** to restore your own inputs.
+The standalone app loads Python data and JSON. The file
+`examples/workbook_original_inputs.json` captures the original
 1,000-cell workbook setup.
 
 Inputs cover time controls; river geometry, flow, velocity and dispersion;
@@ -44,8 +47,11 @@ printed time advances. Its six faces form a channel with the entered width and
 depth; each one-dimensional cell value is uniform across the full cross-section.
 The river length is shortened visually so the channel remains visible, while
 all axis coordinates retain the entered dimensions. The color scale stays fixed
-throughout the animation. Inputs and results can be downloaded as JSON; each
-numerical table can be downloaded as CSV.
+throughout the animation. **Download 3D GIF** captures the selected property
+from the first to the last saved frame with the current camera and Play timing.
+Inputs and results can be downloaded as JSON, and each numerical table as CSV.
+Flow can be entered directly, calculated from discharge, or estimated with the
+rectangular-channel Manning equation. The app uses percent slope for that estimate.
 
 If a run fails, the app reports the calculation, property, simulation step and
 time, and river cell when available. It shows the failed formula or input value,
@@ -99,6 +105,19 @@ The recorder copies the XLSM byte for byte into a temporary directory, runs
 charts, closes the copy without saving, and verifies the source workbook hash.
 It never edits the user's open workbook. Graph-gap probes are separate because
 the macro can display a validation dialog for a blank graph entry.
+
+## VBA coverage
+
+The executed `Channel` path corresponds to the Python state builders, transport
+solvers, source routines, snapshot writer and chart builder. The workbook sheet button
+calls Excel's `Run`
+wrapper either calls `Channel` or dispatches to `Programa` in a separately
+named workbook. The provided workbook stores its external filename in column C, with the
+label in column B. `Run` searches column A, so the button takes the bundled
+`Channel` branch, which is the branch implemented in Python.
+Worksheet activation, cell writes and Excel chart placement are represented by
+the app's result tables and chart data. Numerical quirks such as the QUICK
+end-cell indexing and the Generic minimum-label rule remain for parity.
 
 ## Important macro behaviors preserved
 

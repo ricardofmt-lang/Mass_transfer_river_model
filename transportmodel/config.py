@@ -103,12 +103,26 @@ def build_grid(data: dict[str, Any]) -> Grid:
     return g
 
 
+def manning_velocity(data: dict[str, Any]) -> float:
+    """Estimate mean velocity for a rectangular channel using a slope in percent."""
+    width = _float(data.get("width_m"), "River width")
+    depth = _float(data.get("depth_m"), "Water depth")
+    slope = _float(data.get("slope_percent"), "River slope") / 100
+    roughness = _float(data.get("manning_coefficient"), "Manning coefficient")
+    if width <= 0 or depth <= 0 or roughness <= 0 or slope < 0:
+        raise ModelInputError("Manning’s equation requires positive width, depth and roughness and a nonnegative slope")
+    hydraulic_radius = width * depth / (width + 2 * depth)
+    return hydraulic_radius ** (2 / 3) * math.sqrt(slope) / roughness
+
+
 # Calculate velocity from flow rate when requested; otherwise keep the entered velocity.
 def build_flow(data: dict[str, Any], gr: Grid, ctrl: Controls) -> FlowProperties:
     f = FlowProperties()
     if data.get("velocity_mode") == "flow_formula":
         rate = _float(data.get("flow_rate_m3_s"), "River flow rate")
         f.velocity = rate / (gr.RiverWidth * gr.waterdepth)
+    elif data.get("velocity_mode") == "manning":
+        f.velocity = manning_velocity(data)
     else:
         f.velocity = _float(data.get("velocity_m_s"), "Flow velocity")
     diffusivity = data.get("diffusivity_m2_s")

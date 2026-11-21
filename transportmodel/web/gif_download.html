@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<style>
+  body {
+    margin: 0;
+    padding: 3px 2px;
+    font: 14px system-ui, sans-serif;
+    color: #31333f;
+  }
+  button {
+    font: inherit;
+    color: inherit;
+    padding: 7px 12px;
+    border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+    border-radius: 8px;
+    background: transparent;
+    cursor: pointer;
+  }
+  button:hover { border-color: currentColor; }
+  button:disabled { cursor: wait; opacity: 0.6; }
+  output { display: block; margin-top: 5px; }
+</style>
+<button id="gif-download" type="button">Download 3D GIF</button>
+<output id="gif-status" role="status" aria-live="polite"></output>
+<!-- GIF exporter scripts -->
+</html>

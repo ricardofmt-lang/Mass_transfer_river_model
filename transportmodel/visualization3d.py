@@ -167,6 +167,7 @@ def build_river_3d_figure(
     shown_width = max(0.08, 0.8 * width_m / cross_section)
     shown_depth = max(0.08, 0.8 * depth_m / cross_section)
     fig.update_layout(
+        meta={"propertyName": property_name},
         title=f"{property_name} along the river · "
               f"{result.time_seconds[0]:g} s ({result.time_seconds[0] / 86400:.4g} d)",
         scene={

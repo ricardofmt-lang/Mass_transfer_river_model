@@ -181,7 +181,20 @@ def read_workbook(path: str | Path) -> dict[str, Any]:
             "diffusivity_m2_s": val("River", "Diffusivity:"),
         }
         if isinstance(river["velocity_m_s"], str) and river["velocity_m_s"].replace("$", "").upper() == "=B8/(B4*B5)":
-            river["velocity_m_s"] = _number(river["flow_rate_m3_s"]) / (_number(river["width_m"]) * _number(river["depth_m"]))
+            rate = river["flow_rate_m3_s"]
+            if isinstance(rate, str) and rate.startswith("="):
+                formula = rate.replace("$", "").replace(" ", "").upper()
+                if formula == "=(B4*B5)/B7*(B4*B5/(B4+2*B5))^(2/3)*B6^0.5":
+                    # The archived worksheet formula uses B6 directly. Preserve
+                    # its computed flow separately from the app’s percent-slope mode.
+                    width, depth = _number(river["width_m"]), _number(river["depth_m"])
+                    rate = (width * depth / _number(river["manning_coefficient"])
+                            * (width * depth / (width + 2 * depth)) ** (2 / 3)
+                            * _number(river["slope_percent"]) ** 0.5)
+                else:
+                    rate = cached("River", "Discharge:")
+                river["flow_rate_m3_s"] = rate
+            river["velocity_m_s"] = _number(rate) / (_number(river["width_m"]) * _number(river["depth_m"]))
             river["velocity_mode"] = "flow_formula"
         else:
             river["velocity_mode"] = "direct"

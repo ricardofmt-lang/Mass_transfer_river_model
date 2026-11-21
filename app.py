@@ -1,8 +1,8 @@
 """Local Streamlit front end for the river transport VBA replica.
 
 Run with ``streamlit run app.py`` (or ``run.cmd``). The editor starts with
-empty numerical fields; a saved JSON file or the bundled workbook example can
-fill them in. The JSON structure is the normalized ``read_workbook`` schema.
+empty numerical fields. Load a teaching case or a saved JSON configuration
+to fill them in. The JSON structure is the normalized ``read_workbook`` schema.
 """
 
 from __future__ import annotations
@@ -13,17 +13,17 @@ import inspect
 import json
 import math
 from pathlib import Path
-import sys
 import traceback
+import sys
 from typing import Any
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
-# Streamlit reruns this file without restarting the Python process. Reload an
-# older in-memory solver once so a live session keeps its unsaved widget values
-# while gaining structured numerical errors from the updated source files.
+# A live Streamlit session may have imported the model before structured
+# errors existed. Refresh that specific old version without resetting inputs.
 _loaded_solver = sys.modules.get("transportmodel.numerical")
 _loaded_sources = sys.modules.get("transportmodel.sources")
 if _loaded_solver is not None and (
@@ -34,8 +34,11 @@ if _loaded_solver is not None and (
         importlib.reload(_loaded_sources)
     importlib.reload(_loaded_solver)
 
+from transportmodel.animation_download import gif_download_html
 from transportmodel.charts import COLOR_INDEX, COLOR_RGB, build_charts
+from transportmodel.config import manning_velocity
 from transportmodel.numerical import SimulationResult, run_model
+from transportmodel.presets import teaching_cases
 from transportmodel.visualization3d import build_river_3d_figure
 from transportmodel.workbook import PROPERTIES
 
@@ -154,13 +157,22 @@ def blank_config() -> dict[str, Any]:
 
 
 # Saved JSON can omit fields; recursively merge it onto the complete editor schema.
-def _merge(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+def _merge(base: dict[str, Any], incoming: dict[str, Any], path: str = "") -> dict[str, Any]:
     """Preserve any workbook metadata while filling absent schema fields."""
     result = deepcopy(base)
     for key, value in incoming.items():
-        if isinstance(value, dict) and isinstance(result.get(key), dict):
-            result[key] = _merge(result[key], value)
+        location = f"{path}.{key}" if path else key
+        expected = base.get(key)
+        if isinstance(expected, dict):
+            if not isinstance(value, dict):
+                raise ValueError(f"{location} must be an object")
+            result[key] = _merge(expected, value, location)
         else:
+            if isinstance(expected, list) and value is not None and not isinstance(value, list):
+                raise ValueError(f"{location} must be an array")
+            if key in {"discharges", "cells", "intervals", "henry_constants"} and isinstance(value, list):
+                if any(not isinstance(row, dict) for row in value):
+                    raise ValueError(f"Each row in {location} must be an object")
             result[key] = deepcopy(value)
     return result
 
@@ -243,11 +255,14 @@ def _clear_widgets() -> None:
 
 
 # Store input values in Streamlit session state, then force a fresh widget generation.
-def _load_config(payload: dict[str, Any]) -> None:
+def _load_config(payload: dict[str, Any], *, case_name: str | None = None) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("JSON must contain an input configuration object")
     config = payload.get("config", payload)
     if not isinstance(config, dict):
         raise ValueError("JSON must contain an input configuration object")
     st.session_state["base_config"] = _merge(blank_config(), config)
+    st.session_state["loaded_case_name"] = case_name
     st.session_state.pop("result", None)
     st.session_state.pop("result_config", None)
     st.session_state.pop("simulation_error_report", None)
@@ -263,34 +278,51 @@ def _example_payload() -> dict[str, Any]:
     raise FileNotFoundError("No bundled river example JSON was found")
 
 
-# The top controls load, clear, and download model inputs; no workbook upload is required.
+# Loading fills the editor and keeps the learner in control of when to run.
 def _toolbar() -> None:
     st.title("River transport model")
-    st.caption("Local Python replica of the Channel transport workbook")
-    upload_col, example_col, blank_col = st.columns([2, 1, 1])
-    with upload_col:
-        uploaded = st.file_uploader("Load saved inputs JSON", type=["json"], key=_ui_key("ui_upload"))
-        if uploaded is not None and st.button("Apply JSON inputs", key="apply_json"):
-            try:
-                _load_config(json.loads(uploaded.getvalue().decode("utf-8-sig")))
-            except (ValueError, UnicodeError) as exc:
-                st.error(f"Cannot load JSON: {exc}")
-            else:
+    st.caption("Explore advection, diffusion, heat exchange and water quality in a one-dimensional channel.")
+    cases = teaching_cases()
+    topics = tuple(dict.fromkeys(case.topic for case in cases))
+    with st.container(border=True):
+        st.subheader("Teaching cases")
+        topic_col, case_col, load_col = st.columns([2, 4, 1.35], vertical_alignment="bottom")
+        with topic_col:
+            topic = st.selectbox("Topic", topics, key="case_topic")
+        choices = {case.key: case for case in cases if case.topic == topic}
+        with case_col:
+            key = st.selectbox("Case", choices, format_func=lambda key: choices[key].title,
+                               key=f"teaching_case_{topic}")
+        selected = choices[key]
+        with load_col:
+            if st.button("Load case", key="load_example", **_wide(st.button)):
+                try:
+                    config = selected.config if selected.config is not None else _example_payload()
+                    _load_config(config, case_name=selected.title)
+                except (OSError, ValueError) as exc:
+                    st.error(f"Cannot load case: {exc}")
+                else:
+                    st.rerun()
+        st.caption(f"Lecture {selected.lecture} · {selected.focus}"
+                   if selected.config is not None else selected.focus)
+        loaded_name = st.session_state.get("loaded_case_name")
+        if loaded_name:
+            st.markdown(f"Loaded inputs **{loaded_name}**")
+    with st.expander("Open saved inputs or clear the editor"):
+        upload_col, blank_col = st.columns([4, 1], vertical_alignment="top")
+        with upload_col:
+            uploaded = st.file_uploader("Load saved inputs JSON", type=["json"], key=_ui_key("ui_upload"))
+            if uploaded is not None and st.button("Apply JSON inputs", key="apply_json"):
+                try:
+                    _load_config(json.loads(uploaded.getvalue().decode("utf-8-sig")))
+                except (ValueError, UnicodeError) as exc:
+                    st.error(f"Cannot load JSON: {exc}")
+                else:
+                    st.rerun()
+        with blank_col:
+            if st.button("Clear inputs", key="clear_inputs", **_wide(st.button)):
+                _load_config(blank_config())
                 st.rerun()
-    with example_col:
-        st.write("")
-        if st.button("Load workbook example", key="load_example", **_wide(st.button)):
-            try:
-                _load_config(_example_payload())
-            except (OSError, ValueError) as exc:
-                st.error(f"Cannot load example: {exc}")
-            else:
-                st.rerun()
-    with blank_col:
-        st.write("")
-        if st.button("Clear inputs", key="clear_inputs", **_wide(st.button)):
-            _load_config(blank_config())
-            st.rerun()
 
 
 # Time step, duration, output cadence, and numerical schemes determine the experiment.
@@ -350,40 +382,41 @@ def _river(config: dict[str, Any]) -> None:
         data["length_m"] = _number("Channel length (m)", data.get("length_m"), "length")
         data["width_m"] = _number("River width (m)", data.get("width_m"), "width")
         data["slope_percent"] = _number(
-            "River slope (spreadsheet value)", data.get("slope_percent"), "slope",
-            help="Enter the value as in the River worksheet; the macro divides this entry by 100.",
-        )
-        data["manning_coefficient"] = _number(
-            "Manning coefficient n", data.get("manning_coefficient"), "manning",
-            help="Shown in the workbook; the Channel macro does not use it in transport calculations.",
+            "River slope (%)", data.get("slope_percent"), "slope",
+            help="A slope of 0.0001 m/m is 0.01%. The model divides this field by 100.",
         )
     with c2:
         data["cells"] = _number("Number of cells", data.get("cells"), "cells", integer=True)
         data["depth_m"] = _number("Water depth (m)", data.get("depth_m"), "depth")
-        data["flow_rate_m3_s"] = _number(
-            "River flow rate (m³/s)", data.get("flow_rate_m3_s"), "flow_rate"
-        )
-    velocity_choice = (
-        "Calculate from flow rate" if data.get("velocity_mode") == "flow_formula"
-        else "Enter velocity" if data.get("velocity_mode") == "direct" else None
-    )
-    mode_label = _select(
-        "Flow velocity", ["Enter velocity", "Calculate from flow rate"],
-        velocity_choice, "velocity_mode",
-    )
-    data["velocity_mode"] = (
-        "flow_formula" if mode_label == "Calculate from flow rate"
-        else "direct" if mode_label == "Enter velocity" else None
-    )
+        if data["length_m"] is not None and data["cells"] is not None and round(data["cells"]) > 0:
+            st.caption(f"Cell length: {data['length_m'] / round(data['cells']):.6g} m")
+    modes = {
+        "Enter velocity": "direct",
+        "Calculate from flow rate": "flow_formula",
+        "Estimate from Manning’s equation": "manning",
+    }
+    velocity_choice = next((label for label, key in modes.items() if key == data.get("velocity_mode")), None)
+    mode_label = _select("Flow velocity", list(modes), velocity_choice, "velocity_mode")
+    data["velocity_mode"] = modes.get(mode_label)
     if data["velocity_mode"] == "direct":
-        data["velocity_m_s"] = _number(
-            "Flow velocity (m/s)", data.get("velocity_m_s"), "velocity"
-        )
+        data["velocity_m_s"] = _number("Flow velocity (m/s)", data.get("velocity_m_s"), "velocity")
     elif data["velocity_mode"] == "flow_formula":
+        data["flow_rate_m3_s"] = _number("River flow rate (m³/s)", data.get("flow_rate_m3_s"), "flow_rate")
         q, width, depth = data.get("flow_rate_m3_s"), data.get("width_m"), data.get("depth_m")
         data["velocity_m_s"] = q / (width * depth) if q is not None and width and depth else None
-        if data["velocity_m_s"] is not None:
-            st.caption(f"Calculated velocity: {data['velocity_m_s']:.10g} m/s")
+    elif data["velocity_mode"] == "manning":
+        data["manning_coefficient"] = _number("Manning coefficient n", data.get("manning_coefficient"), "manning")
+        try:
+            data["velocity_m_s"] = manning_velocity(data)
+        except (ValueError, ArithmeticError):
+            data["velocity_m_s"] = None
+    if data["velocity_mode"] and data["velocity_m_s"] is not None:
+        width, depth = data["width_m"], data["depth_m"]
+        if width and depth:
+            flow_rate = data["velocity_m_s"] * width * depth
+            if data["velocity_mode"] == "manning":
+                data["flow_rate_m3_s"] = flow_rate
+            st.caption(f"Velocity: {data['velocity_m_s']:.6g} m/s · Flow rate: {flow_rate:.6g} m³/s")
     diffusivity_choice = (
         "Standard estimate"
         if str(data.get("diffusivity_m2_s")) in ("std", "standard", "Standard", "STANDARD")
@@ -628,6 +661,10 @@ def _property_editor(name: str, config: dict[str, Any]) -> None:
                 "Rate units", ["T90(Hours)", "HalfLife(Days)", "TDuplicate(Days)", "Day-1", "RT"],
                 data.get("generic_rate_units"), "generic_rate_units",
             )
+        if data["generic_rate_units"] == "RT":
+            st.caption("In the VBA rate convention, RT = 1 gives a conservative tracer.")
+        elif data["generic_rate_units"] == "Day-1":
+            st.caption("A negative rate gives decay, zero gives a conservative tracer, and a positive rate gives growth.")
     if name == "BOD":
         st.markdown("#### BOD reaction")
         c1, c2 = st.columns(2)
@@ -640,7 +677,8 @@ def _property_editor(name: str, config: dict[str, Any]) -> None:
             )
         with c2:
             data["bod_logistic_max"] = _number(
-                "Logistic maximum (mg/L)", data.get("bod_logistic_max"), "bod_max"
+                "Logistic maximum (mg/L)", data.get("bod_logistic_max"), "bod_max",
+                help="A zero maximum skips the logistic step for nonnegative BOD. Oxidation still runs."
             )
             data["bod_oxygen_half_saturation"] = _number(
                 "O₂ half-saturation (mg/L)", data.get("bod_oxygen_half_saturation"), "bod_ksat"
@@ -818,10 +856,13 @@ def _simple_plots(result: SimulationResult, name: str) -> None:
         ["Longitudinal profile", "Cell time series", "Space–time map"]
     )
     with profile_tab:
-        row = st.slider(
-            "Printed time", min_value=0, max_value=len(values) - 1,
-            value=len(values) - 1, key="result_profile_row",
-        )
+        row = 0
+        if len(values) > 1:
+            row = st.slider(
+                "Output snapshot", min_value=0, max_value=len(values) - 1,
+                value=len(values) - 1, key="result_profile_row",
+            )
+        st.caption(f"Snapshot at {result.time_seconds[row]:g} s ({days[row]:.6g} days)")
         color = COLOR_RGB.get(COLOR_INDEX.get(name, 33), "#00CCFF")
         fig = go.Figure(go.Scatter(x=result.coordinates_m, y=values[row], mode="lines+markers",
                                    line={"color": color}))
@@ -882,6 +923,8 @@ def _macro_charts(result: SimulationResult, config: dict[str, Any]) -> None:
         title=chart["title"], xaxis_title=chart["x_axis_title"],
         yaxis_title=chart["y_axis_title"],
     )
+    if chart["no_major_gridlines"]:
+        fig.update_yaxes(showgrid=False)
     if chart["y_axis_minimum"] is not None and chart["y_axis_maximum"] is not None:
         if chart["y_axis_minimum"] < chart["y_axis_maximum"]:
             fig.update_yaxes(range=[chart["y_axis_minimum"], chart["y_axis_maximum"]])
@@ -904,6 +947,7 @@ def _river_3d(result: SimulationResult, name: str, config: dict[str, Any]) -> No
         units=units,
     )
     st.plotly_chart(fig, key="result_river_3d", **_wide(st.plotly_chart))
+    components.html(gif_download_html(), height=72)
     st.caption(
         f"Channel width: {float(river['width_m']):g} m; "
         f"depth: {float(river['depth_m']):g} m. "
@@ -914,10 +958,39 @@ def _river_3d(result: SimulationResult, name: str, config: dict[str, Any]) -> No
     )
 
 
+def _explicit_transport_message(config: dict[str, Any], result: SimulationResult) -> str | None:
+    main, river = config["main"], config["river"]
+    dx = float(river["length_m"]) / len(result.coordinates_m)
+    dt = float(main["time_step_seconds"])
+    if dx == 0:
+        return None
+    velocity = abs(float(river["velocity_m_s"] or 0))
+    courant = velocity * dt / dx if main["advection"] else 0.0
+    diffusivity = river["diffusivity_m2_s"]
+    if isinstance(diffusivity, str):
+        diffusivity = 0.1 * velocity * float(river["width_m"])
+    diffusion = float(diffusivity or 0) * dt / dx**2 if main["diffusion"] else 0.0
+    scheme = main.get("advection_type") if main["advection"] else "upwind"
+    if scheme == "upwind" and courant + 2 * diffusion > 1 + 1e-12:
+        return "The explicit stencil exceeds |Cr| + 2D ≤ 1. Look for growing oscillations in the results."
+    if scheme == "central":
+        if diffusion > 0.5 + 1e-12 or courant * courant > 2 * diffusion + 1e-12:
+            return "The explicit central scheme is outside its interior stability range. Look for growing oscillations."
+        if courant > 2 * diffusion + 1e-12:
+            return "The explicit central stencil can overshoot even inside its stability range. Check for new maxima and negative values."
+    return None
+
+
 # Keep numerical tables and all visualizations adjacent so students can compare representations.
-def _results(result: SimulationResult, config: dict[str, Any]) -> None:
+def _results(result: SimulationResult, config: dict[str, Any], inputs_changed: bool) -> None:
     st.header("Results")
-    st.caption("Showing the last completed simulation.")
+    if inputs_changed:
+        st.info("Inputs have changed. Run the simulation again to update these results.")
+    else:
+        st.caption("Showing the last completed simulation.")
+    method = config["main"]["time_method"]
+    if method == "exp" and (message := _explicit_transport_message(config, result)):
+        st.warning(message)
     diag = result.diagnostics
     keys = [
         ("Courant number", "courant_number"),
@@ -933,7 +1006,9 @@ def _results(result: SimulationResult, config: dict[str, Any]) -> None:
     if not names:
         st.info("The run completed with no active properties.")
         return
-    name = st.selectbox("Property or accumulated respiration", names, key="result_property")
+    preferred = config.get("preferred_property")
+    name = st.selectbox("Property or accumulated respiration", names,
+                        index=names.index(preferred) if preferred in names else 0, key="result_property")
     table_tab, charts_tab, river_3d_tab, workbook_tab = st.tabs(
         ["Numerical table", "Interactive graphs", "3D river animation", "Workbook graphs"]
     )
@@ -1086,7 +1161,9 @@ def main() -> None:
         _show_simulation_error(st.session_state["simulation_error_report"])
     result = st.session_state.get("result")
     if result is not None:
-        _results(result, st.session_state["result_config"])
+        previous = st.session_state["result_config"]
+        changed = any(config[key] != previous.get(key) for key in config if key != "graph")
+        _results(result, {**previous, "graph": config["graph"]}, inputs_changed=changed)
 
 
 if __name__ == "__main__":
